@@ -1,7 +1,7 @@
 # InsuHR — 보험사 통합 인사관리시스템 설계서
 
 > **문서 목적**: Claude Code에서 이 문서만으로 시스템을 단계적으로 구현할 수 있도록 작성한 구현용 설계서 (포트폴리오 프로젝트)
-> **버전**: 1.1 / 작성일: 2026-07-17 / 최종 개정: 2026-07-17 ([개정 이력](#개정-이력))
+> **버전**: 1.2 / 작성일: 2026-07-17 / 최종 개정: 2026-07-17 ([개정 이력](#개정-이력))
 > **기술 스택**: Java 21 LTS · Spring Boot 4.1.0 · Oracle Database 23ai
 
 ---
@@ -331,6 +331,14 @@ TB_PERSON (인물 마스터, 주민번호로 유일)
 - 주민등록번호는 `TB_PERSON`에만 암호화 저장. 타 테이블은 `PERSON_ID`(대리키)만 참조.
 - 신규 등록 시 주민번호 해시(`RRN_HASH`)로 기존 인물 존재 여부를 검사하여 중복 인물 생성을 차단하고, 존재하면 역할만 추가한다.
 
+**중복 방어선은 검사가 아니라 제약이다 (v1.2 — Phase 2 결정)**
+
+`POST /persons/check-duplicate`(7.2)는 **UX용**이다. 실제 방어선은 `UQ_PERSON_RRN` 유니크 제약이며, 검사-후-삽입(check-then-insert)에 의존하면 동시 등록 레이스에서 중복 인물이 생긴다. 두 요청이 동시에 "없음"을 확인하고 둘 다 INSERT 하는 창이 열리기 때문이다.
+
+따라서 등록 서비스는 INSERT를 시도하고, 유니크 제약 위반(ORA-00001 → `DataIntegrityViolationException`)을 잡아 **"기존 인물에 역할만 추가"** 흐름으로 전환한다. 이 전환은 예외 처리가 아니라 정상 경로의 일부다.
+
+12장 시나리오 8번(동일 주민번호로 직원+설계사 이중 역할)은 **동시 요청 버전 테스트를 함께 둔다** — 순차 호출만으로는 이 레이스가 드러나지 않는다.
+
 ### 5.3 설계사 위촉 상태머신
 
 ```
@@ -399,13 +407,20 @@ TB_PERSON (인물 마스터, 주민번호로 유일)
 ### 6.2 공통(감사) 컬럼 — 모든 업무 테이블에 포함
 
 ```sql
-CREATED_AT   TIMESTAMP    DEFAULT SYSTIMESTAMP NOT NULL,
+CREATED_AT   TIMESTAMP    DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP) NOT NULL,
 CREATED_BY   VARCHAR2(50) NOT NULL,
 UPDATED_AT   TIMESTAMP,
 UPDATED_BY   VARCHAR2(50)
 ```
 
 JPA에서는 `@MappedSuperclass BaseEntity` + Auditing으로 자동 세팅.
+
+**시각 규약 (v1.2) — 모든 TIMESTAMP 컬럼은 UTC 기준으로 적재한다. 표시 변환은 애플리케이션 책임이다.**
+
+- DDL 기본값에 `SYSTIMESTAMP`를 **직접 쓰지 않는다**. `SYSTIMESTAMP`는 **DB 호스트 타임존**을 따르므로, DB가 Asia/Seoul로 도는 순간 시드·직접 INSERT 행만 KST가 되고 앱 기록 행(UTC)과 9시간 어긋난다. 반드시 `SYS_EXTRACT_UTC(SYSTIMESTAMP)`를 쓴다.
+- 애플리케이션은 `hibernate.jdbc.time_zone=UTC` + `preferred_instant_jdbc_type=TIMESTAMP`로 UTC를 적재한다(3.0).
+- API 응답의 `+09:00` 변환(7.1)은 표현 계층에서 한다.
+- **왜 규약으로 박는가**: 로컬 개발 컨테이너(gvenzl)가 UTC라 두 기준이 어긋나도 **증상이 안 보인다**. 날짜 경계 판정이 많은 배치(8장 — 교육 이수기한, 보증 만기, 미래발령 적용)에서 하루 어긋나는 버그로 뒤늦게 드러난다. `TimestampConventionTest`가 DDL 자체를 검사해 규약 위반을 막는다.
 
 ### 6.3 테이블 목록 (총 38개)
 
@@ -627,7 +642,7 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | TB_USER | LOGIN_ID, PWD_HASH(BCrypt), PERSON_ID(FK, 임직원/설계사 계정), USER_TYPE_CD(HUMAN/SYSTEM), STATUS_CD, LAST_LOGIN_AT, PWD_CHANGED_AT, LOGIN_FAIL_CNT·LOCKED_AT(v1.1 — 10.1의 5회 실패 잠금에 필요) |
 | TB_AUTH_REFRESH_TOKEN | USER_ID(FK), TOKEN_HASH(SHA-256, UNIQUE), ISSUED_AT, EXPIRES_AT, REVOKED_AT |
 | TB_ROLE / TB_USER_ROLE / TB_ROLE_PERM | ROLE_CD, ROLE_NM / USER_ID, ROLE_CD / ROLE_CD, PERM_CD(리소스.행위, 예: agent.read, agent.rrn.decrypt) |
-| TB_PRIVACY_ACCESS_LOG | USER_ID, TARGET_PERSON_ID, ACCESS_TYPE_CD(VIEW/DECRYPT/EXPORT), ACCESS_AT, MENU_OR_API, CLIENT_IP, PURPOSE_TXT |
+| TB_PRIVACY_ACCESS_LOG | USER_ID, TARGET_PERSON_ID, ACCESS_TYPE_CD(VIEW/DECRYPT/EXPORT), ACCESS_AT, MENU_OR_API, CLIENT_IP, PURPOSE_TXT. **TARGET_PERSON_ID의 FK는 "PERSON 행이 물리 삭제되지 않는다"는 전제에 의존한다** — `privacyPurgeJob`(8장)이 삭제가 아니라 익명화(행 유지)이기 때문에 성립한다. 파기 방식을 하드 삭제로 바꾸면 이 FK가 파기를 막는다 (v1.2) |
 | TB_AUDIT_LOG | TABLE_NM, PK_VAL, ACTION_CD(C/U/D), BEFORE_JSON, AFTER_JSON, ACTED_AT, ACTED_BY |
 
 ### 6.6 이력 관리 전략
@@ -637,6 +652,16 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | 유효기간형 | 조직, 위촉계약, 주소 | `VALID_FROM_DT ~ VALID_TO_DT` 컬럼. 현재행 = TO가 9999-12-31 |
 | 이벤트형 | 발령, 위촉상태 전이, 협회 등록/말소 | 사건 1건 = 1행 append-only, 수정 대신 취소행 추가 |
 | 감사형 | PERSON, AGENT, EMP 등 마스터 | Application 계층 AOP로 before/after JSON을 `TB_AUDIT_LOG`에 기록 (트리거 미사용 — 테스트 용이성) |
+
+**이력 행은 항상 변경 후 전체 스냅샷을 담는다 (v1.2 확정 — Phase 2 전제)**
+
+`TB_ORG_HIST.AFTER_JSON`(및 동종 이력 테이블)은 변경된 필드만이 아니라 **변경 후 해당 엔티티의 전체 상태**를 담는다. `BEFORE_JSON`도 마찬가지로 변경 전 전체 상태다.
+
+이유는 기준일자 시점 조회(7.2 `GET /orgs/tree?asOfDate=`) 때문이다. 이력이 diff라면 기준일 트리를 복원하려고 최초 생성부터 diff를 순서대로 재생해야 하는데, 이는 구현·성능 양쪽에서 감당하기 어렵다. 전체 스냅샷이면 시점 조회가 다음 한 줄로 끝난다.
+
+> 조직별로 `EFFECTIVE_DT <= :asOfDate` 인 이력 중 가장 최신 1건을 골라(`ROW_NUMBER()` 또는 `FETCH FIRST`) `AFTER_JSON`에서 필요한 필드를 꺼내 트리를 구성한다. Oracle 23ai면 `JSON_VALUE`로 충분하다.
+
+이는 9.4의 Pull API가 `snapshot`(state-carried transfer)을 싣는 것과 같은 원리다 — 수신측이 순서 꼬임 없이 upsert할 수 있는 이유가 그것이다. 이력·이벤트 페이로드는 **일관되게 전체 상태**를 담는다.
 
 ### 6.7 인덱스·파티션·성능 전략
 
@@ -686,8 +711,9 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | Method | Path | 설명 |
 |---|---|---|
 | POST | /auth/login | 로그인 → Access(30분)/Refresh(14일) 발급 |
-| POST | /auth/refresh | 토큰 재발급 |
+| POST | /auth/refresh | 토큰 재발급 (회전 — 10.1) |
 | POST | /auth/system-token | 시스템 계정 토큰 발급 (연계용) |
+| PUT | /auth/password | **백로그 (v1.2 추가)** — 비밀번호 변경. 10.1의 "최근 3개 재사용 금지 / 90일 변경 강제"를 강제할 곳이 없어 해당 정책이 미구현으로 남아 있다. 구현 시 `TB_USER_PWD_HIST`를 함께 만든다 |
 
 **조직 (ORG)**
 
@@ -890,8 +916,27 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 ### 10.1 인증/인가
 
 - 로그인: BCrypt 검증 → JWT Access(30분) + Refresh(14일, DB 저장·회전). 비밀번호 정책: 최소 10자, 90일 변경, 최근 3개 재사용 금지, 5회 실패 잠금 (정책값).
-  - **구현 주의 (v1.1)**: 로그인 실패 카운트는 반드시 **독립 트랜잭션**(`REQUIRES_NEW`)으로 커밋한다. 인증 실패는 예외로 끝나고 그 예외가 트랜잭션을 롤백시키므로, 같은 트랜잭션에서 카운트를 올리면 롤백과 함께 사라져 **계정이 영원히 잠기지 않는다**. `saveAndFlush`는 해결책이 아니다(flush ≠ commit).
-  - **미구현 (Phase 1 시점)**: "최근 3개 재사용 금지"와 "90일 변경 강제"는 비밀번호 변경 엔드포인트가 7.2에 없어 보류했다. 변경 API를 추가할 때 비밀번호 이력 테이블(`TB_USER_PWD_HIST`)과 함께 구현한다. 정책값(`PWD_REUSE_BLOCK_CNT`, `PWD_EXPIRE_DAYS`)은 이미 시드돼 있다.
+- **Refresh 토큰 저장·회전 (v1.2 확정)**
+  - 토큰 **원문을 저장하지 않는다**. SHA-256 해시(`TOKEN_HASH`)만 저장한다 — DB가 유출돼도 그것만으로 세션을 탈취할 수 없어야 한다. 토큰이 256비트 난수라 pepper는 불필요하다(경우의 수가 좁은 주민번호 해시와 다르다, 6.8).
+  - Refresh 토큰은 JWT가 아니라 **불투명 난수**다. 서버가 DB로 상태를 관리하므로 자체 서술적일 이유가 없고, 짧을수록 유출 표면이 작다.
+  - 회전: 쓰인 토큰은 즉시 폐기하고 새로 발급한다. **이미 폐기된 토큰이 다시 오면 그 계정의 모든 토큰을 무효화한다** — 정상 클라이언트는 폐기된 토큰을 다시 쓸 이유가 없으므로, 재사용은 탈취를 시사한다. 누가 진짜인지 서버는 알 수 없으니 둘 다 끊고 재로그인시킨다.
+
+#### 10.1.1 트랜잭션 경계 규약 (v1.2 — Phase 1 실증)
+
+**"쓰고 나서 예외를 던지는" 경로는 전부 롤백 함정을 밟는다.** 예외가 트랜잭션을 롤백시켜 방금 쓴 것이 사라진다. `saveAndFlush`는 해결책이 아니다 — flush는 커밋이 아니다. Phase 1에서 이 함정을 두 번(로그인 실패 카운트, 토큰 재사용 무효화) 밟았다.
+
+기록의 성격에 따라 방향이 **정반대**이므로 매번 아래 질문에 답하고 결정한다: **"응답이 실패해도 이 기록은 남아야 하는가?"**
+
+| 기록 | 답 | 트랜잭션 | 이유 |
+|---|---|---|---|
+| 로그인 실패 카운트 | 남아야 함 | **REQUIRES_NEW** | 롤백에서 살아남지 못하면 계정이 영원히 안 잠긴다 |
+| 토큰 재사용 감지 시 전체 무효화 | 남아야 함 | **REQUIRES_NEW** | 롤백되면 탈취된 토큰이 계속 살아있다 |
+| 개인정보 접근로그 (10.2) | 같이 실패해야 함 | **같은 트랜잭션** | 기록 없으면 열람도 없다 — 로그가 실패하면 응답도 실패해야 한다 |
+| 기준정보 변경 + ChangeLog + Outbox (9.2) | 같이 실패해야 함 | **같은 트랜잭션** | 유실/유령 이벤트 방지 |
+
+**커넥션 풀 주의**: `REQUIRES_NEW`는 바깥 트랜잭션의 커넥션을 쥔 채 두 번째 커넥션을 꺼낸다. 동시성이 몰리는 엔드포인트(로그인)에서 모든 스레드가 첫 커넥션을 잡고 두 번째를 기다리는 **자기 고갈(pool starvation)**이 가능하다. 그래서 `login()`에는 `@Transactional`을 걸지 않는다 — 인증 검증은 읽기뿐이고, 쓰기가 필요한 경로(실패 기록 / 토큰 발급)가 각자 트랜잭션을 연다. 발급은 기본 전파(REQUIRED)라 `refresh()`처럼 이미 트랜잭션 안에서 부르면 합류해 커넥션이 하나로 유지된다.
+
+- **미구현 (Phase 1 시점)**: "최근 3개 재사용 금지"와 "90일 변경 강제"는 비밀번호 변경 엔드포인트가 7.2에 없어 보류했다. 변경 API(`PUT /auth/password`, 7.2 백로그)를 추가할 때 비밀번호 이력 테이블(`TB_USER_PWD_HIST`)과 함께 구현한다. 정책값(`PWD_REUSE_BLOCK_CNT`, `PWD_EXPIRE_DAYS`)은 이미 시드돼 있다.
 - 인가: `TB_ROLE_PERM`의 `{리소스}.{행위}` 권한을 JWT 클레임에 싣고 메서드 보안(`@PreAuthorize("hasAuthority('agent.write')")`)으로 검사.
 - 기본 역할: `HR_ADMIN`, `SALES_ADMIN`(설계사 관리), `BRANCH_MANAGER`(소속 조직 한정), `SUPPORT_STAFF`(조회 위주), `SELF`(본인), `SYSTEM`(연계), `IT_ADMIN`.
 - **행 수준 접근 통제**: BRANCH_MANAGER/SUPPORT_STAFF는 본인 소속 조직 트리 하위 데이터만 조회 가능 — 공통 `OrgScopeFilter`가 쿼리 조건에 조직 ID 목록을 강제 주입.
@@ -906,6 +951,18 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 | 파기 | 배치 전용 | 파기 대장(감사로그) 기록 |
 
 마스킹 규칙(공통 유틸): 이름 `김*수`, 주민번호 `900101-1******`, 휴대폰 `010-****-1234`, 계좌 뒤 4자리만.
+
+**접근로그는 열람과 같은 트랜잭션 (v1.2)**
+
+복호화는 읽기라 유일한 쓰기가 로그 INSERT다. **로그 INSERT가 실패하면 응답도 실패해야 한다 — 기록 없으면 열람 없음.** 10.1.1의 로그인 실패 기록(REQUIRES_NEW로 롤백에서 살아남아야 함)과 **정반대 방향**이므로 혼동하지 말 것. 판단 기준은 "응답이 실패해도 이 기록이 남아야 하는가"이며, 접근로그의 답은 "아니오"다.
+
+**마스킹 표시값은 쓰기 시점에 저장한다 (v1.2)**
+
+목록 응답의 마스킹 값(`010-****-1234`)을 만들려고 암호문을 복호화하면 **목록 20건 = 복호화 20회**가 매 페이지마다 발생한다. 마스킹은 원문이 필요 없는 표시 문자열이므로, 쓰기 시점에 계산해 별도 평문 컬럼(`*_MASKED`)에 저장하고 목록은 그 컬럼만 읽는다.
+
+- 대상: `TB_PERSON.MOBILE_MASKED`(+`PERSON_NM`은 원래 평문), `TB_AGENT_CONTRACT.ACCOUNT_MASKED`(Phase 5) 등 목록에 노출되는 암호화 컬럼 전부.
+- 원문 변경 시 마스킹 컬럼도 함께 갱신해야 한다 — 엔티티의 setter가 두 값을 한 번에 바꾸도록 강제한다(따로 두면 어긋난다).
+- 마스킹 컬럼은 개인정보가 아니므로 파기 대상에서 제외되지 않는다 — `privacyPurgeJob`(8장)은 이 컬럼도 함께 지운다.
 
 ### 10.3 키 관리
 
@@ -989,6 +1046,13 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 **Phase 2 — 조직·인물**
 - TB_ORG(+HIST), 조직 트리 API(시점 조회), TB_PERSON(+ADDR), 중복검사, 복호화 엔드포인트
 - 완료 기준: 조직 개편 시 이력·Outbox 스텁 기록, RRN_HASH 유니크 동작 테스트
+- **진입 전 확정된 결정 (v1.2)**
+  - 이력 행은 전체 스냅샷 (6.6) — 시점 조회를 diff 재생이 아니라 "조직별 최신 이력 1건" 쿼리로 푼다
+  - 중복 방어선은 유니크 제약 (5.2) — 검사-후-삽입 금지, ORA-00001 → 역할 추가 전환. 동시성 테스트 필수
+  - 접근로그는 열람과 같은 트랜잭션 (10.2) — 10.1.1의 반대 방향
+  - 마스킹 표시값은 쓰기 시점에 별도 컬럼으로 저장 (10.2) — 목록마다 복호화하지 않는다
+  - Phase 1이 FK 없이 남긴 `TB_USER.PERSON_ID` / `TB_PRIVACY_ACCESS_LOG.TARGET_PERSON_ID`에 FK 추가 (후자의 전제는 6.5 참조)
+- **`AuditorAware` 전환 주의**: SecurityContext의 로그인 ID를 쓰도록 바꾸되, **배치·릴레이에는 SecurityContext가 없다**. 잡 이름 또는 `SYSTEM-{모듈명}` 폴백을 반드시 남긴다 — 안 그러면 Phase 7에서 배치가 감사컬럼 NOT NULL 제약에 걸려 넘어진다.
 
 **Phase 3 — 임직원**
 - TB_EMP + 발령(기안/확정/취소/미래발령), 인사기록카드 6종, 휴가
@@ -1068,6 +1132,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 |---|---|---|
 | 1.0 | 2026-07-17 | 최초 작성 |
 | 1.1 | 2026-07-17 | **Boot 4 모듈화 관련 4건 정정 (Phase 0 실증)** — ① Flyway: 자동설정 모듈 `spring-boot-flyway` 필수 명시(누락 시 마이그레이션 무증상 스킵) ② Testcontainers: 2.x 아티팩트명(`testcontainers-oracle-free`)으로 교체 ③ 테스트 HTTP 클라이언트: `TestRestTemplate` 제거 → `RestTestClient`/`RestClient` ④ `@EntityScan` 패키지 이동. 부수: Jackson 3 기본화를 9.2·13(Phase 6)에 반영, MapStruct 1.6.3 고정, Boot 4 이행 주의 절(3.0) 신설. 아키텍처 결정 추가: 스키마 소유·migrate 주체·batch/relay validate 전용(4.2), 암호화 유틸 배치 기준·시드 분리(13.2 Phase 1) |
+| 1.2 | 2026-07-17 | **Phase 1 리뷰 반영 + Phase 2 진입 결정 확정** — ① **시각 규약**: DDL 기본값을 `SYS_EXTRACT_UTC(SYSTIMESTAMP)`로 교체하고 "모든 TIMESTAMP는 UTC 적재, 표시 변환은 앱 책임"을 6.2에 규약화(V5 마이그레이션 + `TimestampConventionTest`). `SYSTIMESTAMP`는 DB 호스트 타임존을 따라 앱(UTC)과 어긋나는데 로컬 컨테이너가 UTC라 증상이 안 보인다 ② **트랜잭션 경계 규약(10.1.1)**: "쓰고 나서 예외를 던지는" 경로의 롤백 함정과 REQUIRES_NEW의 커넥션 풀 자기 고갈. `login()`의 바깥 트랜잭션 제거 ③ Refresh 토큰 해시 저장·재사용 감지 시 전체 무효화 명문화(10.1) ④ 접근로그는 열람과 같은 트랜잭션(10.2 — 10.1.1의 반대 방향) ⑤ 마스킹 표시값 쓰기 시점 저장(10.2) ⑥ 이력 행은 전체 스냅샷 전제 확정(6.6) — 시점 조회를 diff 재생으로 풀지 않기 위함 ⑦ 중복 방어선은 유니크 제약(5.2), 동시성 테스트 필수 ⑧ `TARGET_PERSON_ID` FK의 전제 명시(6.5) ⑨ `PUT /auth/password` 백로그(7.2), `AuditorAware` 배치 폴백(13.2) |
 | 1.1 | 2026-07-17 | **Phase 1 실증 반영** — ① Security 7.1 DSL 변경(`authorizeRequests` 제거, `AccessDeniedHandler` 패키지 이동) ② Hibernate 7 `Instant` 매핑 → ORA-18716 회피 설정(3.0) ③ Testcontainers 싱글턴 패턴 필요(클래스 단위 생명주기 → ORA-17008) ④ jjwt 직렬화 모듈은 `jjwt-gson`(3.0) ⑤ `TB_AUTH_REFRESH_TOKEN` 추가와 `TB_USER` 잠금 컬럼 추가(6.3/6.5 — 10.1 요건인데 목록에 없었음) ⑥ 로그인 실패 카운트의 독립 트랜잭션 요건과 비밀번호 이력 미구현 명시(10.1) |
 
 **개정 원칙**: 본 설계서가 단일 사양이다. 구현 중 설계서와 현실이 어긋나면 코드나 CLAUDE.md에만 우회 기록을 남기지 말고 **이 문서를 개정**하고 위 표에 남긴다. 그렇지 않으면 다음 작업자가 낡은 표기를 근거로 정정을 되돌린다.

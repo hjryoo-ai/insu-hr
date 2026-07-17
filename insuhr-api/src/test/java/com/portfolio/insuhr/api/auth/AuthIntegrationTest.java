@@ -207,6 +207,58 @@ class AuthIntegrationTest extends AbstractIntegrationTest {
   }
 
   @Test
+  @DisplayName("폐기된 refresh 토큰이 재사용되면 그 계정의 모든 토큰이 무효화된다")
+  @SuppressWarnings("unchecked")
+  void reusedRefreshTokenRevokesAllTokensOfUser() {
+    userRepository.save(
+        UserAccount.ofHuman("reuse-detect", passwordEncoder.encode(PASSWORD), null));
+
+    Map<String, Object> first =
+        (Map<String, Object>)
+            client
+                .post()
+                .uri("/api/v1/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("loginId", "reuse-detect", "password", PASSWORD))
+                .retrieve()
+                .body(Map.class)
+                .get("data");
+    String stolenToken = (String) first.get("refreshToken");
+
+    // 정상 회전 — stolenToken은 폐기되고 newToken이 나온다
+    Map<String, Object> rotated =
+        (Map<String, Object>)
+            client
+                .post()
+                .uri("/api/v1/auth/refresh")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("refreshToken", stolenToken))
+                .retrieve()
+                .body(Map.class)
+                .get("data");
+    String newToken = (String) rotated.get("refreshToken");
+
+    // 공격자가 탈취한 옛 토큰을 사용 → 재사용 감지
+    assertThat(refreshStatus(stolenToken).value()).isEqualTo(401);
+
+    // 정상 사용자가 쥐고 있던 새 토큰도 함께 끊긴다. 누가 진짜인지 서버는 알 수 없으므로
+    // 둘 다 끊고 재로그인시키는 것이 회전의 취지다.
+    assertThat(refreshStatus(newToken).value()).isEqualTo(401);
+  }
+
+  private HttpStatusCode refreshStatus(String refreshToken) {
+    return client
+        .post()
+        .uri("/api/v1/auth/refresh")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(Map.of("refreshToken", refreshToken))
+        .retrieve()
+        .onStatus(s -> true, (req, res) -> {})
+        .toBodilessEntity()
+        .getStatusCode();
+  }
+
+  @Test
   @DisplayName("비밀번호가 틀리면 401이고, 연속 실패가 임계값에 닿으면 계정이 잠긴다")
   void locksAccountAfterConsecutiveFailures() {
     UserAccount user =
