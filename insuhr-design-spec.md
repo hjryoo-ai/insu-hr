@@ -130,7 +130,7 @@
 | JDBC Driver | ojdbc | ojdbc17 (23ai 계열) | Maven Central 배포본 |
 | DB Migration | Flyway | Boot BOM 관리 (12.4.0) | `V{n}__desc.sql` 규칙, Oracle 문법. 의존성 3종 필수: **`org.springframework.boot:spring-boot-flyway`**(자동설정) + `org.flywaydb:flyway-database-oracle`(Oracle 지원) + `flyway-core`. **자동설정 모듈을 빠뜨리면 마이그레이션이 예외 없이 조용히 스킵된다** |
 | Batch | Spring Batch | Boot BOM 관리 | 메타테이블은 동일 Oracle 스키마의 별도 테이블스페이스 |
-| Security | Spring Security + JWT | Boot BOM / jjwt | Access/Refresh 토큰, RBAC |
+| Security | Spring Security **7** + JWT | Boot BOM / jjwt 0.13.0 | Access/Refresh 토큰, RBAC. 6.x DSL 미호환 — 람다 DSL 기준 최신 문법. **직렬화 모듈은 `jjwt-gson`을 쓴다**(`jjwt-jackson`은 Jackson 2를 끌어옴 — 3.0 참조) |
 | API 문서 | springdoc-openapi | Boot 4 호환 최신 | 구현 시점에 Boot 4(Framework 7) 지원 버전인지 확인 후 도입 |
 | Messaging(선택) | Spring Kafka | Boot BOM 관리 | `kafka` 프로파일에서만 활성. 기본 프로파일은 Webhook 방식 |
 | Mapping | MapStruct | **1.6.3** | Entity ↔ DTO. 1.7.x는 Beta만 릴리스됨(2026-07 기준) — 안정 최신은 1.6.3 |
@@ -155,6 +155,13 @@ Boot 3 기준의 코드/예제를 그대로 옮기면 깨지는 지점들이다.
 
 - 애노테이션 프로세서 경로는 `implementation`의 BOM을 물려받지 않는다. `annotationProcessor` / `testAnnotationProcessor` 각각에 platform을 선언해야 Lombok 버전이 해석된다.
 - 루트 `build.gradle.kts`의 `libs` 타입세이프 접근자는 `subprojects {}` 블록 안에서 해석되지 않는다(서브프로젝트를 대상으로 조회하다 실패). 루트 스코프에서 값을 캡처해 넘긴다.
+
+**jjwt 직렬화 모듈 선택 (v1.1 — Phase 1 실측)**
+
+jjwt는 JSON 직렬화 모듈을 하나 요구한다. `jjwt-jackson`은 `com.fasterxml.jackson.core:jackson-databind`(**Jackson 2**)에 의존하므로, 이걸 쓰면 Boot 4 기본(Jackson 3)과 두 버전이 클래스패스에 공존한다.
+
+- **HTTP 컨버터가 뒤바뀌지는 않는다** — 확인 결과 Boot 4는 Jackson 2 컨버터를 `spring.http.converters.preferred-json-mapper=jackson2`로 명시하거나 Jackson 3이 아예 없을 때만 등록한다(`PreferJackson2OrJacksonUnavailableCondition`). 즉 공존 자체는 안전하다.
+- **그럼에도 `jjwt-gson`을 쓴다.** Jackson 2가 클래스패스에 없으면 우리 코드의 `com.fasterxml` 오임포트가 **컴파일 에러**가 된다. 9.2가 경고하는 "컴파일은 통과하고 런타임 설정만 안 먹는" 실수를 구조적으로 봉쇄하는 쪽이 낫다. Gson은 jjwt 내부에만 쓰이고, Gson HTTP 컨버터 역시 Jackson·JSONB 부재 시에만 등록되므로 API 직렬화에 영향이 없다.
 
 **Oracle 식별자 대소문자**
 

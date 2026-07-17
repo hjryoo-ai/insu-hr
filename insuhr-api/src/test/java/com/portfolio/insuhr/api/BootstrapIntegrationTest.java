@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.portfolio.insuhr.api.support.AbstractIntegrationTest;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,11 +12,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.RestClient;
 
-/**
- * Phase 0 완료 기준 검증 (설계서 13.2).
- *
- * <p>1) Oracle 컨테이너 기동 2) Flyway 마이그레이션 적용 3) /actuator/health UP
- */
+/** 기동·스키마 부트스트랩 검증 (설계서 13.2 Phase 0 완료 기준). */
 class BootstrapIntegrationTest extends AbstractIntegrationTest {
 
   @LocalServerPort int port;
@@ -41,22 +38,18 @@ class BootstrapIntegrationTest extends AbstractIntegrationTest {
   }
 
   @Test
-  @DisplayName("Flyway가 V1을 적용했다")
-  void flywayMigrationApplied() {
-    // 이력은 Flyway 빈으로 확인한다. flyway_schema_history 를 직접 SELECT 하지 않는 이유:
-    // Flyway 12는 Oracle에서 이 테이블을 소문자 따옴표 식별자로 만들어서, 컬럼을 참조하려면
-    // "installed_rank" 처럼 일일이 따옴표를 붙여야 한다. Flyway 내부 스키마에 테스트를 묶을 이유가 없다.
+  @DisplayName("가용한 마이그레이션이 빠짐없이 적용됐고 실패·미적용이 없다")
+  void allMigrationsApplied() {
+    // 버전 번호를 박아두지 않는다 — Phase가 올라갈 때마다 이 테스트를 고치게 되고,
+    // 그러면 "고치다 보니 통과"하는 테스트가 된다. 확인할 건 "빠진 것도 실패한 것도 없다"이다.
+    //
+    // Flyway 내부 테이블을 직접 SELECT 하지 않는 이유: Flyway 12는 Oracle에서 이 테이블을
+    // 소문자 따옴표 식별자로 만들어 컬럼마다 "installed_rank" 처럼 따옴표가 필요하다(설계서 3.0).
     assertThat(flyway.info().current()).isNotNull();
-    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
-    assertThat(flyway.info().applied()).hasSize(1);
-  }
-
-  @Test
-  @DisplayName("V1이 만든 스키마가 실제로 조회된다")
-  void schemaCreatedByMigration() {
-    Integer rows =
-        jdbcClient.sql("SELECT COUNT(*) FROM TB_SCHEMA_BOOTSTRAP").query(Integer.class).single();
-    assertThat(rows).isEqualTo(1);
+    assertThat(flyway.info().pending()).isEmpty();
+    assertThat(flyway.info().applied())
+        .isNotEmpty()
+        .allSatisfy(m -> assertThat(m.getState()).isEqualTo(MigrationState.SUCCESS));
   }
 
   @Test
