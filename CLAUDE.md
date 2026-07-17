@@ -4,24 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~3 완료** (2026-07-18). `./gradlew build` 그린, 테스트 100개(+`@Disabled` 1). 마이그레이션 V1~V10.
+**Phase 0~4 완료** (2026-07-18). `./gradlew build` 그린, 테스트 126개(+`@Disabled` 1). 마이그레이션 V1~V11.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
 - Phase 2: 조직+이력(V6), 인물+주소+FK 보강(V7), 조직 트리 시점 조회, 중복차단(유니크 제약+동시성), 복호화+접근로그, IntegrationRecorder 스텁, AuditorAware 전환
 - Phase 3: 임직원+발령(V8), 인사기록카드 6종(V9), 휴가/연차(V10). 발령 반영은 **증분이 아니라 재계산**(`AppointmentApplyService`) — 스냅샷 = "CONFIRMED이고 발령일≤기준일인 발령 중 (발령일, ID) 최대"라는 함수(설계서 5.5). `Clock` 빈 주입으로 날짜 경계 테스트(시나리오 6a). 사번은 `SEQ_EMP_NO` 무의미 번호
+- Phase 4: 설계사+위촉이력+위촉계약(V11), 상태머신 `AgentLifecycleService`. **전이표는 `AgentStatus`의 enum 맵 하나가 단일 원천**(5×5 전 행렬 테스트). 전이는 원자적 — `TB_AGENT.VERSION` 낙관적 잠금(동시 전이 409, 8스레드 테스트). **모든 전이가 상태머신 한 관문을 지나 이력 1행 + 이벤트 1건을 남긴다**(recorder 호출도 거기, 구조로 보장). 위촉 요건검증은 `RecruitmentRequirementChecker` SPI(스텁→Phase 5). 재위촉은 같은 `AGENT_ID` 유지 + 현재상태 컬럼 리셋(과거는 이력에만). 계보 `CONNECT BY NOCYCLE` + 도입자 순환 방어. `AGENT_CD`는 `SEQ_AGENT_CD` 무의미 번호. `OrgService.close()`의 TB_AGENT 검사 완성 + `@Disabled` 제거
 
-다음은 설계서 §13.2의 **Phase 4 — 설계사 코어**: TB_AGENT + 상태머신(AgentLifecycleService), 후보등록/위촉/정지/해촉/재위촉/이동, 위촉계약, 계보. 완료 기준은 시나리오 1·4.
+다음은 설계서 §13.2의 **Phase 5 — 자격·교육·보증·제재 + 모집자격**: LICENSE/ASSOC_REG/CROSS_SELL/EDU(+POLICY)/GUARANTEE/SANCTION/MISSELL, `RecruitEligibilityService`. 완료 기준은 판정 규칙표(§5.4) 전 항목 + 시나리오 3, 그리고 1b(실제 요건 미충족 판정).
 
-Phase 4+에서 갚아야 할 것:
-- `OrgService.close()`의 **TB_AGENT 소속 검사가 아직 비어 있다** — TB_EMP 검사는 Phase 3에서 채웠다. `OrgCloseMemberIntegrationTest`에 `@Disabled("Phase 4: TB_AGENT 검사")` 테스트가 실행 가능한 형태의 빚으로 남아 있다. Phase 4에서 검사 추가 후 그 `@Disabled`를 제거
+Phase 5+에서 갚아야 할 것:
+- `AlwaysSatisfiedRequirementChecker`(위촉 요건검증 스텁) — Phase 5에서 `RecruitEligibilityService` 기반 실판정을 붙이고 **이 클래스를 삭제**한다(`NoOpIntegrationRecorder`와 같은 방식). 상태머신 서비스는 무수정. 시나리오 1b가 여기서 완결
+- **resume 판정 게이트** — 지금 정지해제는 판정 없이 열려 있다. `AgentLifecycleIntegrationTest`에 `@Disabled("Phase 5: eligibility 게이트")` 테스트가 빚으로 남아 있다. Phase 5에서 게이트 추가 후 그 `@Disabled` 제거
 - `NoOpIntegrationRecorder` — Phase 6에서 실제 구현을 붙이고 **이 클래스를 삭제**한다(조건부 등록이 아니라 삭제)
 - **Phase 7 `futureAppointApplyJob`** — `AppointmentApplyService`를 **감싸기만** 한다(반영 규칙 재구현 금지). 시나리오 6b(배치 래퍼+멱등)가 여기서 완결
 - **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4)
 
 ## 단일 사양(SSOT)
 
-`insuhr-design-spec.md`(현재 **v1.4**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
+`insuhr-design-spec.md`(현재 **v1.5**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
 설계서와 다르게 구현해야 할 이유가 있으면 임의로 벗어나지 말고 사용자에게 먼저 알린다.
 
 **설계서가 현실과 어긋나는 것을 발견하면 CLAUDE.md나 코드 주석에만 우회 기록을 남기지 말고 설계서 본문을 개정하고 말미의 개정 이력에 남긴다.** 그렇게 하지 않으면 다음 세션이 "설계서 우선" 규칙을 근거로 정정을 되돌린다. 이 파일에는 결론만 두고 근거·상세는 설계서에 둔다.
@@ -97,6 +99,9 @@ Controller → Application Service(`@Transactional`, 유스케이스 단위) →
 ## 코딩 규칙
 
 - **DB 변경은 Flyway 마이그레이션 파일로만.** `ddl-auto`는 `validate`만 허용, 엔티티로 스키마를 만들지 않는다. 파티셔닝은 로컬에서 없어도 동작하도록 `V90__partitioning.sql`로 분리.
+- **`phase-*` 태그에 든 마이그레이션은 불변** — 이후 변경은 파일을 고치지 말고 새 `ALTER` 마이그레이션을 추가한다(체크섬 불일치 → validate 실패 방지, 설계서 §4.2 v1.5). 같은 Phase 내 아직 미태그 파일은 자유롭게 수정.
+- **상태를 바꾸는 도메인 서비스는 자기 `@Transactional`(REQUIRED)을 선언한다** — 호출부가 트랜잭션을 깔아줄 거라 가정하지 않는다(설계서 §10.1.1 v1.5, `recalculate()` 실증).
+- **`Clock`에서 저장 시각은 `Instant.now(clock)`(존 무관), 업무 날짜는 `LocalDate.now(clock)`(KST), `LocalDateTime.now(clock)`은 금지** (설계서 §6.2 v1.5).
 - **법령 의존 수치 하드코딩 금지.** 보수교육 주기(24개월), 재정보증 최소금액, 재위촉 냉각기간(6개월), 개인정보 보존기간 등은 전부 `TB_POLICY_CONFIG`에서 읽는다. 설계서의 수치는 포트폴리오용 기본값이며 실제 법령값이 아니다.
 - **개인식별정보는 기본 마스킹.** 목록·상세 응답은 항상 마스킹 값, 원문은 전용 복호화 엔드포인트에서만 — 사유 입력 필수 + `TB_PRIVACY_ACCESS_LOG` 기록. 암호화는 AES-256-GCM, 암호문에 키 버전 프리픽스(`v1:...`)를 붙여 회전 가능하게. 키·pepper는 환경변수/시크릿에서 주입.
 - **명명**: 테이블 `TB_{도메인}_{명사}`, PK는 `GENERATED AS IDENTITY` 단일 대리키, 업무키는 별도 UNIQUE. 컬럼 접미사 `_CD`(코드) `_YN`(CHAR(1)) `_DT`(DATE) `_AT`(TIMESTAMP) `_AMT` `_ENC`(암호문) `_HASH`.

@@ -7,6 +7,7 @@ import com.portfolio.insuhr.common.response.ApiResponse;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -67,6 +68,24 @@ public class GlobalExceptionHandler {
             ApiResponse.fail(
                 CommonErrorCode.FORBIDDEN,
                 CommonErrorCode.FORBIDDEN.defaultMessage(),
+                TraceIdProvider.current()));
+  }
+
+  /**
+   * 낙관적 잠금 충돌 → 409 (설계서 5.3 v1.5).
+   *
+   * <p>두 담당자가 같은 설계사에게 동시에 전이를 걸면 진 쪽의 {@code @Version}이 어긋나 여기로 온다. 상태머신 서비스는 검사+쓰기가 원자적이라고 가정하는데,
+   * 그 원자성을 실제로 보장하는 것이 이 잠금이다. 명시적으로 다루지 않으면 아래 Exception 핸들러가 500으로 삼킨다.
+   */
+  @ExceptionHandler(OptimisticLockingFailureException.class)
+  public ResponseEntity<ApiResponse<Void>> handleOptimisticLock(
+      OptimisticLockingFailureException e) {
+    log.warn("optimistic lock conflict: {}", e.getMessage());
+    return ResponseEntity.status(CommonErrorCode.CONFLICT.httpStatus())
+        .body(
+            ApiResponse.fail(
+                CommonErrorCode.CONFLICT,
+                "다른 사용자가 먼저 상태를 변경했습니다. 다시 시도하십시오.",
                 TraceIdProvider.current()));
   }
 

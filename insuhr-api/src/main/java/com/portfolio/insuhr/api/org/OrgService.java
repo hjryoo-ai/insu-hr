@@ -1,6 +1,8 @@
 package com.portfolio.insuhr.api.org;
 
 import com.portfolio.insuhr.common.exception.BusinessException;
+import com.portfolio.insuhr.domain.agent.AgentRepository;
+import com.portfolio.insuhr.domain.agent.AgentStatus;
 import com.portfolio.insuhr.domain.emp.EmpRepository;
 import com.portfolio.insuhr.domain.emp.EmpStatus;
 import com.portfolio.insuhr.domain.integration.IntegrationEvent;
@@ -37,6 +39,7 @@ public class OrgService {
   private final OrgHistRepository orgHistRepository;
   private final OrgQueryDao orgQueryDao;
   private final EmpRepository empRepository;
+  private final AgentRepository agentRepository;
   private final IntegrationRecorder integrationRecorder;
   private final ObjectMapper objectMapper;
 
@@ -45,12 +48,14 @@ public class OrgService {
       OrgHistRepository orgHistRepository,
       OrgQueryDao orgQueryDao,
       EmpRepository empRepository,
+      AgentRepository agentRepository,
       IntegrationRecorder integrationRecorder,
       ObjectMapper objectMapper) {
     this.orgRepository = orgRepository;
     this.orgHistRepository = orgHistRepository;
     this.orgQueryDao = orgQueryDao;
     this.empRepository = empRepository;
+    this.agentRepository = agentRepository;
     this.integrationRecorder = integrationRecorder;
     this.objectMapper = objectMapper;
   }
@@ -122,8 +127,13 @@ public class OrgService {
       throw new BusinessException(
           OrgErrorCode.HAS_MEMBERS, "소속 재직 임직원이 있어 폐지할 수 없습니다. 조직코드=" + orgCd);
     }
-    // TB_AGENT(설계사) 소속 검사는 Phase 4에서 추가한다 — 그 빚은 OrgServiceTest의
-    // @Disabled("Phase 4: TB_AGENT 검사") 테스트로 실행 가능한 형태로 남겨 둔다(설계서 13.2 v1.4).
+    // 소속 현역 설계사도 폐지를 막는다 (설계서 5.3 v1.5로 갚는 나머지 절반). 해촉(TERMINATED)은 세지 않는다 —
+    // 재직자/해촉의 관계는 임직원의 재직/퇴직과 대칭이다.
+    if (agentRepository.existsByOrgIdAndAgentStatusCdNot(
+        org.getId(), AgentStatus.TERMINATED.name())) {
+      throw new BusinessException(
+          OrgErrorCode.HAS_MEMBERS, "소속 현역 설계사가 있어 폐지할 수 없습니다. 조직코드=" + orgCd);
+    }
 
     org.close(closeDate);
     recordChange(org, OrgChangeType.CLOSE, before, closeDate, reason, "org.closed");

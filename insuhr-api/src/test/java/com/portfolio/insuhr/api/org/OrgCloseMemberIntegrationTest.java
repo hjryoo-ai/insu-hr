@@ -4,10 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.portfolio.insuhr.api.agent.AgentService;
 import com.portfolio.insuhr.api.emp.EmployeeService;
 import com.portfolio.insuhr.api.support.AbstractIntegrationTest;
 import com.portfolio.insuhr.api.support.TestSeq;
 import com.portfolio.insuhr.common.exception.BusinessException;
+import com.portfolio.insuhr.domain.agent.Channel;
+import com.portfolio.insuhr.domain.agent.TermReason;
 import com.portfolio.insuhr.domain.emp.AppointType;
 import com.portfolio.insuhr.domain.emp.EmpType;
 import com.portfolio.insuhr.domain.org.Org;
@@ -17,7 +20,6 @@ import com.portfolio.insuhr.domain.person.Gender;
 import com.portfolio.insuhr.domain.person.NewPerson;
 import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +36,7 @@ class OrgCloseMemberIntegrationTest extends AbstractIntegrationTest {
 
   @Autowired OrgService orgService;
   @Autowired EmployeeService employeeService;
+  @Autowired AgentService agentService;
   @Autowired OrgRepository orgRepository;
 
   private String newOrgCd() {
@@ -110,12 +113,48 @@ class OrgCloseMemberIntegrationTest extends AbstractIntegrationTest {
   }
 
   @Test
-  @Disabled("Phase 4: TB_AGENT 소속 검사 추가 시 활성화한다 (설계서 13.2 v1.4). 이 테스트가 존재하는 것이 빚의 기록이다.")
-  @DisplayName("소속 설계사가 있는 조직은 폐지할 수 없다 (Phase 4)")
+  @DisplayName("소속 현역 설계사가 있는 조직은 폐지할 수 없다 (Phase 4에 갚은 나머지 절반)")
   void cannotCloseOrgWithActiveAgent() {
-    // Phase 4에서 TB_AGENT + AgentLifecycleService가 생기면:
-    //   1. 조직 생성 → 설계사 위촉(그 조직 소속) → close 시도 → HAS_MEMBERS 409
-    // OrgService.close()에 TB_AGENT 검사를 추가하고 이 @Disabled를 제거한다.
-    throw new UnsupportedOperationException("Phase 4에서 구현");
+    String cd = newOrgCd();
+    registerAgentInto(orgIdOf(cd));
+
+    assertThatThrownBy(() -> orgService.close(cd, LocalDate.of(2026, 6, 30), "폐지 시도"))
+        .isInstanceOf(BusinessException.class)
+        .hasMessageContaining("소속 현역 설계사");
+  }
+
+  @Test
+  @DisplayName("해촉 설계사만 남은 조직은 폐지할 수 있다 — 해촉자의 소속은 이력적 사실이다 (임직원 퇴직자와 대칭)")
+  void closesOrgWithOnlyTerminatedAgent() {
+    String cd = newOrgCd();
+    Long orgId = orgIdOf(cd);
+    Long agentId = registerAgentInto(orgId);
+
+    // 위촉 → 활성 → 해촉까지 몰고 간다.
+    agentService.appoint(
+        agentId,
+        LocalDate.of(2026, 1, 2),
+        new AgentService.ContractCommand("FC_STD", "2026-1", null, null, null));
+    agentService.registerAssociation(agentId, LocalDate.of(2026, 1, 3), "L-1");
+    agentService.terminate(agentId, LocalDate.of(2026, 1, 10), TermReason.SELF, "자진");
+
+    assertThatCode(() -> orgService.close(cd, LocalDate.of(2026, 6, 30), "해촉자만 남음"))
+        .doesNotThrowAnyException();
+  }
+
+  private Long registerAgentInto(Long orgId) {
+    int n = SEQ.getAndIncrement();
+    return agentService
+        .registerCandidate(
+            new NewPerson(
+                "설계사" + n,
+                TestSeq.rrn(),
+                LocalDate.of(1988, 5, 5),
+                Gender.F,
+                "01055556666",
+                null,
+                "KR"),
+            new AgentService.RegisterCommand(Channel.FC, orgId, null))
+        .agentId();
   }
 }
