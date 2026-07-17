@@ -78,8 +78,9 @@ public class PersonController {
    *
    * <p>{@code person.rrn.decrypt} 권한 + 사유 입력 필수. 접근로그가 남는다(10.2).
    *
-   * <p>GET이지만 사유를 받아야 해서 본문이 필요하다. 설계서 7.2의 경로를 유지하되 POST 본문 대신 쿼리 파라미터로 사유를 받는 것도 방법이나, 사유가
-   * URL·액세스로그에 남는 것을 피하려 POST로 둔다.
+   * <p><b>POST인 이유</b>(설계서 7.1 v1.4): 조회 의미상 GET이 자연스럽지만, GET이면 열람 사유가 쿼리스트링에 실려 URL로 샌다 —
+   * 액세스로그·프록시·브라우저 히스토리에 남고 그중 어느 것도 {@code TB_PRIVACY_ACCESS_LOG} 통제를 받지 않는다. 사유를 본문에 담아 이 경로를
+   * 닫는다. 민감정보 복호화 계열 전체의 일반 규칙이다.
    */
   @PostMapping("/{personId}/rrn")
   @PreAuthorize("hasAuthority('person.rrn.decrypt')")

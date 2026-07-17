@@ -4,17 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~2 완료** (2026-07-17). `./gradlew build` 그린, 테스트 68개. 마이그레이션 V1~V7.
+**Phase 0~3 완료** (2026-07-18). `./gradlew build` 그린, 테스트 100개(+`@Disabled` 1). 마이그레이션 V1~V10.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
 - Phase 2: 조직+이력(V6), 인물+주소+FK 보강(V7), 조직 트리 시점 조회, 중복차단(유니크 제약+동시성), 복호화+접근로그, IntegrationRecorder 스텁, AuditorAware 전환
+- Phase 3: 임직원+발령(V8), 인사기록카드 6종(V9), 휴가/연차(V10). 발령 반영은 **증분이 아니라 재계산**(`AppointmentApplyService`) — 스냅샷 = "CONFIRMED이고 발령일≤기준일인 발령 중 (발령일, ID) 최대"라는 함수(설계서 5.5). `Clock` 빈 주입으로 날짜 경계 테스트(시나리오 6a). 사번은 `SEQ_EMP_NO` 무의미 번호
 
-다음은 설계서 §13.2의 **Phase 3 — 임직원**: TB_EMP + 발령(기안/확정/취소/미래발령), 인사기록카드 6종, 휴가. 완료 기준은 시나리오 6번(미래발령).
+다음은 설계서 §13.2의 **Phase 4 — 설계사 코어**: TB_AGENT + 상태머신(AgentLifecycleService), 후보등록/위촉/정지/해촉/재위촉/이동, 위촉계약, 계보. 완료 기준은 시나리오 1·4.
 
-Phase 3+에서 갚아야 할 것:
-- `OrgService.close()`의 **소속인원 검사가 비어 있다** — TB_EMP/TB_AGENT가 없어 통과시켰다. 생기는 즉시 추가할 것 (설계서 7.2는 소속인원 존재 시 409)
+Phase 4+에서 갚아야 할 것:
+- `OrgService.close()`의 **TB_AGENT 소속 검사가 아직 비어 있다** — TB_EMP 검사는 Phase 3에서 채웠다. `OrgCloseMemberIntegrationTest`에 `@Disabled("Phase 4: TB_AGENT 검사")` 테스트가 실행 가능한 형태의 빚으로 남아 있다. Phase 4에서 검사 추가 후 그 `@Disabled`를 제거
 - `NoOpIntegrationRecorder` — Phase 6에서 실제 구현을 붙이고 **이 클래스를 삭제**한다(조건부 등록이 아니라 삭제)
+- **Phase 7 `futureAppointApplyJob`** — `AppointmentApplyService`를 **감싸기만** 한다(반영 규칙 재구현 금지). 시나리오 6b(배치 래퍼+멱등)가 여기서 완결
+- **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4)
 
 ## 단일 사양(SSOT)
 
