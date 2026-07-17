@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~1 완료** (2026-07-17). `./gradlew build` 그린, 테스트 51개. 마이그레이션 V1~V4.
+**Phase 0~2 완료** (2026-07-17). `./gradlew build` 그린, 테스트 68개. 마이그레이션 V1~V7.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
-- Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
+- Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
+- Phase 2: 조직+이력(V6), 인물+주소+FK 보강(V7), 조직 트리 시점 조회, 중복차단(유니크 제약+동시성), 복호화+접근로그, IntegrationRecorder 스텁, AuditorAware 전환
 
-다음은 설계서 §13.2의 **Phase 2 — 조직·인물**: TB_ORG(+HIST), 조직 트리 API(시점 조회), TB_PERSON(+ADDR), 중복검사, 복호화 엔드포인트.
+다음은 설계서 §13.2의 **Phase 3 — 임직원**: TB_EMP + 발령(기안/확정/취소/미래발령), 인사기록카드 6종, 휴가. 완료 기준은 시나리오 6번(미래발령).
 
-Phase 2에서 정리할 것:
-- `JpaAuditingConfig.auditorAware()` — SYSTEM 고정. SecurityContext의 로그인 ID를 읽도록 교체
-- `TB_USER.PERSON_ID`, `TB_PRIVACY_ACCESS_LOG.TARGET_PERSON_ID` — TB_PERSON이 없어 FK 없이 뒀다. 생기면 FK 추가
-- 접근로그(TB_PRIVACY_ACCESS_LOG)는 테이블만 있고 기록 로직은 복호화 엔드포인트와 함께 Phase 2에서
+Phase 3+에서 갚아야 할 것:
+- `OrgService.close()`의 **소속인원 검사가 비어 있다** — TB_EMP/TB_AGENT가 없어 통과시켰다. 생기는 즉시 추가할 것 (설계서 7.2는 소속인원 존재 시 409)
+- `NoOpIntegrationRecorder` — Phase 6에서 실제 구현을 붙이고 **이 클래스를 삭제**한다(조건부 등록이 아니라 삭제)
 
 ## 단일 사양(SSOT)
 

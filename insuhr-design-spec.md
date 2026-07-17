@@ -1,7 +1,7 @@
 # InsuHR — 보험사 통합 인사관리시스템 설계서
 
 > **문서 목적**: Claude Code에서 이 문서만으로 시스템을 단계적으로 구현할 수 있도록 작성한 구현용 설계서 (포트폴리오 프로젝트)
-> **버전**: 1.2 / 작성일: 2026-07-17 / 최종 개정: 2026-07-17 ([개정 이력](#개정-이력))
+> **버전**: 1.3 / 작성일: 2026-07-17 / 최종 개정: 2026-07-17 ([개정 이력](#개정-이력))
 > **기술 스택**: Java 21 LTS · Spring Boot 4.1.0 · Oracle Database 23ai
 
 ---
@@ -151,6 +151,7 @@ Boot 3 기준의 코드/예제를 그대로 옮기면 깨지는 지점들이다.
 | Testcontainers | 1.x (`oracle-free`, `junit-jupiter`) | **2.x** (`testcontainers-oracle-free`, `testcontainers-junit-jupiter`). 클래스 패키지는 `org.testcontainers.oracle`로 동일. Oracle 전용 `@ServiceConnection` 팩토리는 없고 범용 `JdbcContainerConnectionDetailsFactory`가 처리 |
 | Spring Security | 6.x DSL | **7.1** — `authorizeRequests()`와 체이닝 스타일(`.csrf().disable()`)이 **제거**됨. `Customizer` 람다 오버로드만 남았다. `AccessDeniedHandler`도 `...security.web` → `...security.web.access`로 이동 |
 | Hibernate `Instant` 매핑 | — | Hibernate 7 기본값(`TIMESTAMP_UTC`)은 `Instant`를 TIMESTAMP WITH TIME ZONE으로 다뤄, 6.2의 존 없는 TIMESTAMP 컬럼을 읽을 때 **ORA-18716**이 난다. 아래 참조 |
+| `_YN` 컬럼 매핑 | — | 6.1의 `_YN`은 CHAR(1)인데 Hibernate는 String 속성을 VARCHAR2로 기대해 `ddl-auto=validate`가 기동을 막는다("wrong column type"). `YnConverter`(boolean ↔ 'Y'/'N') + `@JdbcTypeCode(SqlTypes.CHAR)`를 함께 쓴다 (v1.3) |
 
 **Gradle 관련**
 
@@ -338,6 +339,12 @@ TB_PERSON (인물 마스터, 주민번호로 유일)
 따라서 등록 서비스는 INSERT를 시도하고, 유니크 제약 위반(ORA-00001 → `DataIntegrityViolationException`)을 잡아 **"기존 인물에 역할만 추가"** 흐름으로 전환한다. 이 전환은 예외 처리가 아니라 정상 경로의 일부다.
 
 12장 시나리오 8번(동일 주민번호로 직원+설계사 이중 역할)은 **동시 요청 버전 테스트를 함께 둔다** — 순차 호출만으로는 이 레이스가 드러나지 않는다.
+
+**제약 위반 복구는 반드시 독립 트랜잭션에서 (v1.3 — Phase 2 실증)**
+
+JPA에서 제약 위반이 나면 영속성 컨텍스트가 오염되고 트랜잭션이 rollback-only로 표시된다. **같은 트랜잭션 안에서는 복구 조회(`findByRrnHash`)조차 할 수 없다** — 8개 스레드 동시 등록에서 7개가 실패했다. 따라서 INSERT 시도를 `REQUIRES_NEW`에 가두고, 실패하면 멀쩡한 상태의 호출부에서 기존 인물을 찾는다. `saveAndFlush`가 필수다 — 커밋까지 미루면 예외가 catch 블록이 아니라 트랜잭션 종료 시점에 터진다.
+
+**결과적 성질**: 인물 행은 호출부 트랜잭션과 무관하게 커밋된다. 상위 유스케이스(입사, 후보등록)가 뒤에서 실패하면 역할 없는 인물이 남지만, 이는 손상 데이터가 아니라 **재사용 가능한 상태**다 — 같은 주민번호로 다시 시도하면 그 인물을 찾아 쓴다. 인물 등록이 주민번호 기준으로 멱등이기에 성립하는 절충이며, Phase 3·4가 이 성질에 의존한다.
 
 ### 5.3 설계사 위촉 상태머신
 
@@ -931,8 +938,9 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 |---|---|---|---|
 | 로그인 실패 카운트 | 남아야 함 | **REQUIRES_NEW** | 롤백에서 살아남지 못하면 계정이 영원히 안 잠긴다 |
 | 토큰 재사용 감지 시 전체 무효화 | 남아야 함 | **REQUIRES_NEW** | 롤백되면 탈취된 토큰이 계속 살아있다 |
+| 인물 INSERT 시도 (5.2) | — | **REQUIRES_NEW** | 다른 이유다 — 제약 위반이 트랜잭션을 오염시켜 <b>복구 조회조차 막기</b> 때문이다 (v1.3) |
 | 개인정보 접근로그 (10.2) | 같이 실패해야 함 | **같은 트랜잭션** | 기록 없으면 열람도 없다 — 로그가 실패하면 응답도 실패해야 한다 |
-| 기준정보 변경 + ChangeLog + Outbox (9.2) | 같이 실패해야 함 | **같은 트랜잭션** | 유실/유령 이벤트 방지 |
+| 기준정보 변경 + 이력 + Outbox (9.2) | 같이 실패해야 함 | **같은 트랜잭션** | 유실/유령 이벤트 방지 |
 
 **커넥션 풀 주의**: `REQUIRES_NEW`는 바깥 트랜잭션의 커넥션을 쥔 채 두 번째 커넥션을 꺼낸다. 동시성이 몰리는 엔드포인트(로그인)에서 모든 스레드가 첫 커넥션을 잡고 두 번째를 기다리는 **자기 고갈(pool starvation)**이 가능하다. 그래서 `login()`에는 `@Transactional`을 걸지 않는다 — 인증 검증은 읽기뿐이고, 쓰기가 필요한 경로(실패 기록 / 토큰 발급)가 각자 트랜잭션을 연다. 발급은 기본 전파(REQUIRED)라 `refresh()`처럼 이미 트랜잭션 안에서 부르면 합류해 커넥션이 하나로 유지된다.
 
@@ -1132,6 +1140,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 |---|---|---|
 | 1.0 | 2026-07-17 | 최초 작성 |
 | 1.1 | 2026-07-17 | **Boot 4 모듈화 관련 4건 정정 (Phase 0 실증)** — ① Flyway: 자동설정 모듈 `spring-boot-flyway` 필수 명시(누락 시 마이그레이션 무증상 스킵) ② Testcontainers: 2.x 아티팩트명(`testcontainers-oracle-free`)으로 교체 ③ 테스트 HTTP 클라이언트: `TestRestTemplate` 제거 → `RestTestClient`/`RestClient` ④ `@EntityScan` 패키지 이동. 부수: Jackson 3 기본화를 9.2·13(Phase 6)에 반영, MapStruct 1.6.3 고정, Boot 4 이행 주의 절(3.0) 신설. 아키텍처 결정 추가: 스키마 소유·migrate 주체·batch/relay validate 전용(4.2), 암호화 유틸 배치 기준·시드 분리(13.2 Phase 1) |
+| 1.3 | 2026-07-17 | **Phase 2 실증 반영** — ① **제약 위반 복구는 독립 트랜잭션 필수**(5.2, 10.1.1): JPA는 제약 위반 시 트랜잭션을 rollback-only로 만들어 같은 트랜잭션 내 복구 조회조차 막는다(동시 등록 8건 중 7건 실패로 확인). 인물 INSERT는 REQUIRES_NEW + `saveAndFlush` ② 그 결과 인물 행은 호출부와 무관하게 커밋된다 — 역할 없는 인물은 손상이 아니라 재사용 가능 상태(주민번호 기준 멱등) ③ `_YN` 컬럼 매핑: `YnConverter` + `@JdbcTypeCode(SqlTypes.CHAR)`(3.0) ④ v1.2에서 확정한 "이력 = 전체 스냅샷" 전제가 성립함을 확인 — 시점 조회가 쿼리 하나로 풀리고 폐지 조직 필터링에 분기가 불필요(6.6) |
 | 1.2 | 2026-07-17 | **Phase 1 리뷰 반영 + Phase 2 진입 결정 확정** — ① **시각 규약**: DDL 기본값을 `SYS_EXTRACT_UTC(SYSTIMESTAMP)`로 교체하고 "모든 TIMESTAMP는 UTC 적재, 표시 변환은 앱 책임"을 6.2에 규약화(V5 마이그레이션 + `TimestampConventionTest`). `SYSTIMESTAMP`는 DB 호스트 타임존을 따라 앱(UTC)과 어긋나는데 로컬 컨테이너가 UTC라 증상이 안 보인다 ② **트랜잭션 경계 규약(10.1.1)**: "쓰고 나서 예외를 던지는" 경로의 롤백 함정과 REQUIRES_NEW의 커넥션 풀 자기 고갈. `login()`의 바깥 트랜잭션 제거 ③ Refresh 토큰 해시 저장·재사용 감지 시 전체 무효화 명문화(10.1) ④ 접근로그는 열람과 같은 트랜잭션(10.2 — 10.1.1의 반대 방향) ⑤ 마스킹 표시값 쓰기 시점 저장(10.2) ⑥ 이력 행은 전체 스냅샷 전제 확정(6.6) — 시점 조회를 diff 재생으로 풀지 않기 위함 ⑦ 중복 방어선은 유니크 제약(5.2), 동시성 테스트 필수 ⑧ `TARGET_PERSON_ID` FK의 전제 명시(6.5) ⑨ `PUT /auth/password` 백로그(7.2), `AuditorAware` 배치 폴백(13.2) |
 | 1.1 | 2026-07-17 | **Phase 1 실증 반영** — ① Security 7.1 DSL 변경(`authorizeRequests` 제거, `AccessDeniedHandler` 패키지 이동) ② Hibernate 7 `Instant` 매핑 → ORA-18716 회피 설정(3.0) ③ Testcontainers 싱글턴 패턴 필요(클래스 단위 생명주기 → ORA-17008) ④ jjwt 직렬화 모듈은 `jjwt-gson`(3.0) ⑤ `TB_AUTH_REFRESH_TOKEN` 추가와 `TB_USER` 잠금 컬럼 추가(6.3/6.5 — 10.1 요건인데 목록에 없었음) ⑥ 로그인 실패 카운트의 독립 트랜잭션 요건과 비밀번호 이력 미구현 명시(10.1) |
 
