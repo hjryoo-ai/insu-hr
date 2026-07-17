@@ -19,8 +19,15 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        type:
+          # 설계서 6.2의 감사 컬럼은 존 없는 TIMESTAMP다. Hibernate 7 기본값(TIMESTAMP_UTC)은
+          # Instant를 TIMESTAMP WITH TIME ZONE으로 다뤄서 읽을 때 ORA-18716이 난다.
+          preferred_instant_jdbc_type: TIMESTAMP
         jdbc:
-          time_zone: Asia/Seoul
+          # 존 없는 컬럼에 Instant를 넣으려면 어느 존으로 기록할지 규약이 필요하다.
+          # DB에는 UTC로만 적재한다 — Oracle 컨테이너의 SYSTIMESTAMP(기본 UTC)와 어긋나지
+          # 않게 하려는 것이다. 응답의 +09:00 변환은 API 계층이 한다(설계서 7.1).
+          time_zone: UTC
 
   flyway:
     enabled: true
@@ -30,6 +37,13 @@ spring:
 
   jackson:
     default-property-inclusion: always
+
+insuhr:
+  jwt:
+    # 시크릿은 환경변수로만 주입한다 (설계서 10.3 — 소스·DB 저장 금지).
+    # 로컬 기본값은 개발 편의용이며 운영에서는 반드시 INSUHR_JWT_SECRET 를 설정해야 한다.
+    secret: ${INSUHR_JWT_SECRET:local-dev-only-secret-do-not-use-in-production}
+    issuer: insuhr
 
 server:
   port: 8080

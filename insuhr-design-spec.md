@@ -149,7 +149,8 @@ Boot 3 기준의 코드/예제를 그대로 옮기면 깨지는 지점들이다.
 | 테스트 HTTP 클라이언트 | `TestRestTemplate` | **제거됨**. Spring 7 `RestTestClient`(`org.springframework.test.web.servlet.client`) 또는 `RestClient` + `@LocalServerPort` |
 | JSON | Jackson 2 (`com.fasterxml.jackson`) | **Jackson 3 기본** (`tools.jackson`, 3.1.4). Jackson 2(2.21.4)는 호환용으로만 잔존 |
 | Testcontainers | 1.x (`oracle-free`, `junit-jupiter`) | **2.x** (`testcontainers-oracle-free`, `testcontainers-junit-jupiter`). 클래스 패키지는 `org.testcontainers.oracle`로 동일. Oracle 전용 `@ServiceConnection` 팩토리는 없고 범용 `JdbcContainerConnectionDetailsFactory`가 처리 |
-| Spring Security | 6.x DSL | **7.x** — 구버전 스타일 설정이 제거·변경됨. 반드시 람다 DSL 기준 최신 문법으로 작성 (Phase 1) |
+| Spring Security | 6.x DSL | **7.1** — `authorizeRequests()`와 체이닝 스타일(`.csrf().disable()`)이 **제거**됨. `Customizer` 람다 오버로드만 남았다. `AccessDeniedHandler`도 `...security.web` → `...security.web.access`로 이동 |
+| Hibernate `Instant` 매핑 | — | Hibernate 7 기본값(`TIMESTAMP_UTC`)은 `Instant`를 TIMESTAMP WITH TIME ZONE으로 다뤄, 6.2의 존 없는 TIMESTAMP 컬럼을 읽을 때 **ORA-18716**이 난다. 아래 참조 |
 
 **Gradle 관련**
 
@@ -166,6 +167,23 @@ jjwt는 JSON 직렬화 모듈을 하나 요구한다. `jjwt-jackson`은 `com.fas
 **Oracle 식별자 대소문자**
 
 Flyway 12는 Oracle에서 이력 테이블을 소문자 따옴표 식별자(`flyway_schema_history`, `installed_rank`)로 만든다. Oracle 23ai는 테이블명은 따옴표 없이 찾아주지만 컬럼은 `"installed_rank"`처럼 따옴표가 필요하다. 애초에 Flyway 내부 테이블을 SQL로 조회하지 말고 `Flyway` 빈의 `info()`를 쓴다. 우리 스키마는 6.1 규칙대로 전부 대문자이므로 이 문제가 없다.
+
+**시각 타입 매핑 (v1.1 — Phase 1 실측)**
+
+6.2의 감사 컬럼은 존 없는 `TIMESTAMP`인데 Hibernate 7은 `Instant`를 기본적으로 `TIMESTAMP_UTC`(= TIMESTAMP WITH TIME ZONE)로 매핑해 조회 시 **ORA-18716 "not in any time zone"**이 난다. 다음 두 설정을 함께 건다.
+
+```yaml
+spring.jpa.properties.hibernate.type.preferred_instant_jdbc_type: TIMESTAMP  # 존 없는 컬럼에 맞춤
+spring.jpa.properties.hibernate.jdbc.time_zone: UTC                          # 적재 존을 UTC로 고정
+```
+
+`time_zone`을 UTC로 두는 이유: 존 없는 컬럼에 `Instant`를 넣으려면 "어느 존으로 적재하는가"의 규약이 필요하다. Oracle 컨테이너의 `SYSTIMESTAMP`(마이그레이션 시드의 DEFAULT)가 UTC이므로, 앱도 UTC로 맞춰야 시드 행과 앱 행의 기준이 갈리지 않는다. 응답의 `+09:00` 변환(7.1)은 API 계층이 담당한다.
+
+**통합 테스트 컨테이너 생명주기 (v1.1 — Phase 1 실측)**
+
+Testcontainers의 `@Testcontainers` + `@Container`(static) 조합을 쓰지 말 것. 이 조합은 컨테이너를 **테스트 클래스 단위**로 띄우고 내리는데 스프링 컨텍스트는 클래스 간에 캐시돼 재사용된다. 첫 클래스가 끝나며 컨테이너를 내리면 다음 클래스가 캐시된 컨텍스트의 죽은 커넥션 풀을 물고 **ORA-17008(Closed connection)**로 깨진다. 단일 클래스만 돌리면 통과하고 전체 빌드에서만 깨지므로 발견이 늦다.
+
+대신 **싱글턴 컨테이너 패턴**을 쓴다 — static 초기화로 한 번 띄우고 명시적으로 내리지 않으며(JVM 종료 시 Ryuk가 정리), 접속 정보는 `@DynamicPropertySource`로 주입한다.
 
 ### 3.1 로컬 개발 환경 (docker-compose)
 
@@ -423,6 +441,7 @@ JPA에서는 `@MappedSuperclass BaseEntity` + Auditing으로 자동 세팅.
 | 공통 | TB_CD_GRP / TB_CD | 공통코드 그룹/코드 |
 | | TB_POLICY_CONFIG | 정책값 (보수교육 주기, 최소보증금액, 재위촉 제한기간, 보존기간 등) |
 | | TB_USER / TB_ROLE / TB_USER_ROLE / TB_ROLE_PERM | 계정/역할/권한 |
+| | TB_AUTH_REFRESH_TOKEN | Refresh 토큰 (v1.1 추가 — 10.1의 "DB 저장·회전" 요건에 저장소가 필요한데 목록에 없었음). 토큰 원문이 아니라 SHA-256 해시를 저장 |
 | | TB_PRIVACY_ACCESS_LOG | 개인정보 조회 접근로그 |
 | | TB_AUDIT_LOG | 주요 테이블 변경 감사로그 (JSON diff) |
 
@@ -605,7 +624,8 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | TB_IF_FILE_LOG | FILE_TYPE_CD(FULL/DELTA), TARGET_DT, FILE_PATH, ROW_CNT, CHECKSUM, STATUS_CD |
 | TB_CD_GRP / TB_CD | GRP_CD, GRP_NM / GRP_CD, CD, CD_NM, SORT_ORD, USE_YN, ATTR1~3 |
 | TB_POLICY_CONFIG | POLICY_KEY, POLICY_VAL, VAL_TYPE_CD, DESC_TXT, VALID_FROM_DT — 예: CONT_EDU_CYCLE_MONTHS=24, MIN_GRNT_AMT=..., REAPPOINT_COOLDOWN_MONTHS=6, PRIVACY_RETENTION_YEARS=... |
-| TB_USER | LOGIN_ID, PWD_HASH(BCrypt), PERSON_ID(FK, 임직원/설계사 계정), USER_TYPE_CD(HUMAN/SYSTEM), STATUS_CD, LAST_LOGIN_AT, PWD_CHANGED_AT |
+| TB_USER | LOGIN_ID, PWD_HASH(BCrypt), PERSON_ID(FK, 임직원/설계사 계정), USER_TYPE_CD(HUMAN/SYSTEM), STATUS_CD, LAST_LOGIN_AT, PWD_CHANGED_AT, LOGIN_FAIL_CNT·LOCKED_AT(v1.1 — 10.1의 5회 실패 잠금에 필요) |
+| TB_AUTH_REFRESH_TOKEN | USER_ID(FK), TOKEN_HASH(SHA-256, UNIQUE), ISSUED_AT, EXPIRES_AT, REVOKED_AT |
 | TB_ROLE / TB_USER_ROLE / TB_ROLE_PERM | ROLE_CD, ROLE_NM / USER_ID, ROLE_CD / ROLE_CD, PERM_CD(리소스.행위, 예: agent.read, agent.rrn.decrypt) |
 | TB_PRIVACY_ACCESS_LOG | USER_ID, TARGET_PERSON_ID, ACCESS_TYPE_CD(VIEW/DECRYPT/EXPORT), ACCESS_AT, MENU_OR_API, CLIENT_IP, PURPOSE_TXT |
 | TB_AUDIT_LOG | TABLE_NM, PK_VAL, ACTION_CD(C/U/D), BEFORE_JSON, AFTER_JSON, ACTED_AT, ACTED_BY |
@@ -870,6 +890,8 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 ### 10.1 인증/인가
 
 - 로그인: BCrypt 검증 → JWT Access(30분) + Refresh(14일, DB 저장·회전). 비밀번호 정책: 최소 10자, 90일 변경, 최근 3개 재사용 금지, 5회 실패 잠금 (정책값).
+  - **구현 주의 (v1.1)**: 로그인 실패 카운트는 반드시 **독립 트랜잭션**(`REQUIRES_NEW`)으로 커밋한다. 인증 실패는 예외로 끝나고 그 예외가 트랜잭션을 롤백시키므로, 같은 트랜잭션에서 카운트를 올리면 롤백과 함께 사라져 **계정이 영원히 잠기지 않는다**. `saveAndFlush`는 해결책이 아니다(flush ≠ commit).
+  - **미구현 (Phase 1 시점)**: "최근 3개 재사용 금지"와 "90일 변경 강제"는 비밀번호 변경 엔드포인트가 7.2에 없어 보류했다. 변경 API를 추가할 때 비밀번호 이력 테이블(`TB_USER_PWD_HIST`)과 함께 구현한다. 정책값(`PWD_REUSE_BLOCK_CNT`, `PWD_EXPIRE_DAYS`)은 이미 시드돼 있다.
 - 인가: `TB_ROLE_PERM`의 `{리소스}.{행위}` 권한을 JWT 클레임에 싣고 메서드 보안(`@PreAuthorize("hasAuthority('agent.write')")`)으로 검사.
 - 기본 역할: `HR_ADMIN`, `SALES_ADMIN`(설계사 관리), `BRANCH_MANAGER`(소속 조직 한정), `SUPPORT_STAFF`(조회 위주), `SELF`(본인), `SYSTEM`(연계), `IT_ADMIN`.
 - **행 수준 접근 통제**: BRANCH_MANAGER/SUPPORT_STAFF는 본인 소속 조직 트리 하위 데이터만 조회 가능 — 공통 `OrgScopeFilter`가 쿼리 조건에 조직 ID 목록을 강제 주입.
@@ -1046,6 +1068,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 |---|---|---|
 | 1.0 | 2026-07-17 | 최초 작성 |
 | 1.1 | 2026-07-17 | **Boot 4 모듈화 관련 4건 정정 (Phase 0 실증)** — ① Flyway: 자동설정 모듈 `spring-boot-flyway` 필수 명시(누락 시 마이그레이션 무증상 스킵) ② Testcontainers: 2.x 아티팩트명(`testcontainers-oracle-free`)으로 교체 ③ 테스트 HTTP 클라이언트: `TestRestTemplate` 제거 → `RestTestClient`/`RestClient` ④ `@EntityScan` 패키지 이동. 부수: Jackson 3 기본화를 9.2·13(Phase 6)에 반영, MapStruct 1.6.3 고정, Boot 4 이행 주의 절(3.0) 신설. 아키텍처 결정 추가: 스키마 소유·migrate 주체·batch/relay validate 전용(4.2), 암호화 유틸 배치 기준·시드 분리(13.2 Phase 1) |
+| 1.1 | 2026-07-17 | **Phase 1 실증 반영** — ① Security 7.1 DSL 변경(`authorizeRequests` 제거, `AccessDeniedHandler` 패키지 이동) ② Hibernate 7 `Instant` 매핑 → ORA-18716 회피 설정(3.0) ③ Testcontainers 싱글턴 패턴 필요(클래스 단위 생명주기 → ORA-17008) ④ jjwt 직렬화 모듈은 `jjwt-gson`(3.0) ⑤ `TB_AUTH_REFRESH_TOKEN` 추가와 `TB_USER` 잠금 컬럼 추가(6.3/6.5 — 10.1 요건인데 목록에 없었음) ⑥ 로그인 실패 카운트의 독립 트랜잭션 요건과 비밀번호 이력 미구현 명시(10.1) |
 
 **개정 원칙**: 본 설계서가 단일 사양이다. 구현 중 설계서와 현실이 어긋나면 코드나 CLAUDE.md에만 우회 기록을 남기지 말고 **이 문서를 개정**하고 위 표에 남긴다. 그렇지 않으면 다음 작업자가 낡은 표기를 근거로 정정을 되돌린다.
 

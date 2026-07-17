@@ -8,6 +8,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -48,6 +49,24 @@ public class GlobalExceptionHandler {
                 CommonErrorCode.INVALID_REQUEST,
                 CommonErrorCode.INVALID_REQUEST.defaultMessage(),
                 details,
+                TraceIdProvider.current()));
+  }
+
+  /**
+   * 인가 실패(403).
+   *
+   * <p>이 핸들러가 필요한 이유: {@code @PreAuthorize}는 컨트롤러 메서드 호출 시점에 AccessDeniedException을 던지므로, Security의
+   * AccessDeniedHandler(필터 체인)가 아니라 이 advice가 먼저 잡는다. 명시적으로 다루지 않으면 아래 Exception 핸들러가 삼켜 403이어야 할
+   * 응답이 500으로 나간다.
+   */
+  @ExceptionHandler(AccessDeniedException.class)
+  public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException e) {
+    log.warn("access denied: {}", e.getMessage());
+    return ResponseEntity.status(CommonErrorCode.FORBIDDEN.httpStatus())
+        .body(
+            ApiResponse.fail(
+                CommonErrorCode.FORBIDDEN,
+                CommonErrorCode.FORBIDDEN.defaultMessage(),
                 TraceIdProvider.current()));
   }
 

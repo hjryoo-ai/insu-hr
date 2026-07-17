@@ -4,14 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0 완료** (2026-07-17). 멀티모듈 골격 5종, docker-compose, Flyway `V1__init.sql`, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers 통합 테스트가 서 있고 `./gradlew build` 그린이다.
+**Phase 0~1 완료** (2026-07-17). `./gradlew build` 그린, 테스트 51개. 마이그레이션 V1~V4.
 
-다음 작업은 설계서 §13.2의 **Phase 1 — 공통 기반**: 공통코드(TB_CD_GRP/TB_CD) + 부록 A 시드(`V2`), 정책값(TB_POLICY_CONFIG), 계정/역할/JWT 인증, 권한 어노테이션, 마스킹·암호화 유틸(+키버전), 접근로그.
+- Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
+- Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
 
-Phase 1에서 정리할 Phase 0의 임시 코드:
-- `V1__init.sql`의 `TB_SCHEMA_BOOTSTRAP` — 파이프라인 확인용 더미 테이블. 실제 스키마가 들어오면 제거
+다음은 설계서 §13.2의 **Phase 2 — 조직·인물**: TB_ORG(+HIST), 조직 트리 API(시점 조회), TB_PERSON(+ADDR), 중복검사, 복호화 엔드포인트.
+
+Phase 2에서 정리할 것:
 - `JpaAuditingConfig.auditorAware()` — SYSTEM 고정. SecurityContext의 로그인 ID를 읽도록 교체
-- git 저장소가 아직 초기화되지 않았다(`git init` 미실행)
+- `TB_USER.PERSON_ID`, `TB_PRIVACY_ACCESS_LOG.TARGET_PERSON_ID` — TB_PERSON이 없어 FK 없이 뒀다. 생기면 FK 추가
+- 접근로그(TB_PRIVACY_ACCESS_LOG)는 테이블만 있고 기록 로직은 복호화 엔드포인트와 함께 Phase 2에서
 
 ## 단일 사양(SSOT)
 

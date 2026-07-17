@@ -9,6 +9,13 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("org.springframework.boot:spring-boot-starter-security")
+
+    // JWT 직렬화는 jjwt-gson. jjwt-jackson은 Jackson 2를 끌어와 Boot 4 기본(Jackson 3)과
+    // 공존하게 되고, 그러면 com.fasterxml 오임포트가 컴파일을 통과해버린다 (설계서 3.0).
+    implementation(libs.jjwt.api)
+    runtimeOnly(libs.jjwt.impl)
+    runtimeOnly(libs.jjwt.gson)
 
     // 운영 코드는 Flyway API를 직접 쓰지 않으므로 domain에서 runtimeOnly로 둔다.
     // 마이그레이션 적용 여부를 단언하는 테스트에서만 컴파일 의존이 필요하다.
