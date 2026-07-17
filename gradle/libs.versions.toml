@@ -1,0 +1,20 @@
+[versions]
+# 확정 근거: Maven Central maven-metadata.xml 조회 (2026-07-17)
+springBoot = "4.1.0"
+spotless = "8.8.0"
+googleJavaFormat = "1.28.0"
+# MapStruct 1.7.x는 아직 Beta만 릴리스됨 → 안정 최신인 1.6.3 고정
+mapstruct = "1.6.3"
+jjwt = "0.13.0"
+
+[libraries]
+# Boot BOM이 관리하지 않는 것만 여기서 버전을 잡는다.
+mapstruct = { module = "org.mapstruct:mapstruct", version.ref = "mapstruct" }
+mapstruct-processor = { module = "org.mapstruct:mapstruct-processor", version.ref = "mapstruct" }
+jjwt-api = { module = "io.jsonwebtoken:jjwt-api", version.ref = "jjwt" }
+jjwt-impl = { module = "io.jsonwebtoken:jjwt-impl", version.ref = "jjwt" }
+jjwt-jackson = { module = "io.jsonwebtoken:jjwt-jackson", version.ref = "jjwt" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

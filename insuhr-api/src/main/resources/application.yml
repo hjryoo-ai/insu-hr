@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: insuhr-api
+
+  datasource:
+    url: ${INSUHR_DB_URL:jdbc:oracle:thin:@localhost:1521/FREEPDB1}
+    username: ${INSUHR_DB_USER:insuhr}
+    password: ${INSUHR_DB_PASSWORD:insuhr}
+    driver-class-name: oracle.jdbc.OracleDriver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 10000
+
+  jpa:
+    # 설계서 13.1: 스키마는 Flyway만 만든다. 엔티티로 DDL을 생성하지 않는다.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: Asia/Seoul
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  jackson:
+    default-property-inclusion: always
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  health:
+    db:
+      enabled: true
+
+logging:
+  pattern:
+    # traceId(MDC)를 모든 로그 라인에 남긴다 — 응답 envelope의 traceId와 같은 값 (설계서 10.4)
+    level: "%5p [%X{traceId:-}]"
+  level:
+    com.portfolio.insuhr: DEBUG
+    org.flywaydb: INFO

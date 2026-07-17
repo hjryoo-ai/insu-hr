@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: insuhr-batch
+
+  datasource:
+    url: ${INSUHR_DB_URL:jdbc:oracle:thin:@localhost:1521/FREEPDB1}
+    username: ${INSUHR_DB_USER:insuhr}
+    password: ${INSUHR_DB_PASSWORD:insuhr}
+    driver-class-name: oracle.jdbc.OracleDriver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  # 스키마 마이그레이션의 실행 주체는 api 하나로 고정한다(설계서 4.2).
+  # 다만 끄지는 않는다 — validate 전용으로 켜두면 api보다 batch가 먼저 뜨는 배포 순서 실수를
+  # 런타임 SQL 에러가 아니라 기동 실패로 즉시 잡는다. FlywayValidateOnlyConfig 참조.
+  flyway:
+    enabled: true
+
+insuhr:
+  flyway:
+    mode: validate
+
+  batch:
+    jdbc:
+      # Batch 메타테이블도 Flyway가 만든다(설계서 3장). 부트가 자동 생성하지 않게 막는다.
+      initialize-schema: never
+    job:
+      # --job.name 으로 지정한 잡만 실행한다. 인자 없이 뜨면 아무 잡도 돌지 않는다.
+      enabled: false
+
+logging:
+  level:
+    com.portfolio.insuhr: DEBUG

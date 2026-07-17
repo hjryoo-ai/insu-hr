@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: insuhr-relay
+
+  datasource:
+    url: ${INSUHR_DB_URL:jdbc:oracle:thin:@localhost:1521/FREEPDB1}
+    username: ${INSUHR_DB_USER:insuhr}
+    password: ${INSUHR_DB_PASSWORD:insuhr}
+    driver-class-name: oracle.jdbc.OracleDriver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  # 마이그레이션 주체는 api 하나. validate 전용으로 켜둔다 (설계서 4.2)
+  flyway:
+    enabled: true
+
+insuhr:
+  flyway:
+    mode: validate
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+
+logging:
+  level:
+    com.portfolio.insuhr: DEBUG
