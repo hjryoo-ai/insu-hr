@@ -1,0 +1,15 @@
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# 일배치 스냅샷 파일 산출물 (설계서 9.5)
+outbox-files/
+
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# 로컬 시크릿 — AES 키/HMAC pepper 는 환경변수로 주입한다 (설계서 10.3)
+.env
+*.local.yml
