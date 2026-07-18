@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~5 완료** (2026-07-18). `./gradlew build` 그린, 테스트 139개(`@Disabled` 0). 마이그레이션 V1~V12.
+**Phase 0~6 완료** (2026-07-18). `./gradlew build` 그린, 테스트 150개(`@Disabled` 0). 마이그레이션 V1~V13.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
@@ -13,12 +13,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Phase 4: 설계사+위촉이력+위촉계약(V11), 상태머신 `AgentLifecycleService`. **전이표는 `AgentStatus`의 enum 맵 하나가 단일 원천**(5×5 전 행렬 테스트). 전이는 원자적 — `TB_AGENT.VERSION` 낙관적 잠금(동시 전이 409, 8스레드 테스트). **모든 전이가 상태머신 한 관문을 지나 이력 1행 + 이벤트 1건을 남긴다**(recorder 호출도 거기, 구조로 보장). 재위촉은 같은 `AGENT_ID` 유지 + 현재상태 컬럼 리셋(과거는 이력에만). 계보 `CONNECT BY NOCYCLE` + 도입자 순환 방어
 - Phase 5: 자격·교육·보증·제재+교차모집·불완전판매(V12), 모집자격 판정. **판정과 집행 분리** — `RecruitEligibilityService.evaluate(agentId, asOf)`는 부수효과 없는 순수 함수(종목별 판정), `AgentEligibilityReconciler`가 결과를 받아 자동 ACTIVE↔SUSPENDED + `RECRUIT_ELIG_YN`("마지막 계산 결과") 갱신 + 종합 판정이 실제로 바뀔 때만 `agent.eligibility.changed` 발행. **자격·교육·보증·제재의 모든 쓰기가 reconciler를 탄다**(`AgentCredentialService`) — 제재 등록 시 자동 정지도 이 경로. 보수교육 null 기저선 = `LAST_APPOINT_DT`+주기. 경계 inclusive. 종합 YN = 공통 게이트 통과 AND 모집가능 종목≥1(변액만 없어도 Y). 복수 보증 합산. 위촉 요건검증 스텁을 실판정 `EligibilityRequirementChecker`로 교체하고 **`AlwaysSatisfiedRequirementChecker` 소스 삭제**. resume 판정 게이트 추가 + `@Disabled` 제거
 
-다음은 설계서 §13.2의 **Phase 6 — 연계**: `IntegrationRecorder` 실구현(ChangeLog+Outbox), insuhr-relay(웹훅+서명+재시도, kafka 프로파일), Pull API, 구독자 관리. 완료 기준은 WireMock 수신 검증 + 시나리오 5 + 동일 aggId 순서 보장.
+- Phase 6: 연계 3계층 — `IntegrationRecorder` 실구현(ChangeLog+Outbox, `NoOpIntegrationRecorder` 삭제), insuhr-relay 2단계 폴러, Pull API, 구독자 관리(V13). **팬아웃 = 릴레이 픽업 시점의 활성 구독자×TOPIC_FILTER**(recorder 아님) → `TB_IF_DELIVERY`(이벤트×구독자), Outbox `READY→FANNED_OUT→SENT`는 요약. 팬아웃은 `JdbcClient` `INSERT ... SELECT ... WHERE NOT EXISTS` 한 문장(§4.3 쓰기 예외 — rollback-only 함정 회피). **순서 게이트는 (구독자, aggId) 단위** 종결집합 {SENT,SKIPPED}, 선행 {PENDING,FAILED}면 후행 보류. 구독자 0명=즉시 SENT, 비활성 구독자 미전송분=SKIPPED로 요약 수렴(**단일 릴레이 인스턴스 가정**). 서명 = `HMAC-SHA256(timestamp + "." + body)`(전송 바이트 그대로 + 타임스탬프로 리플레이 방어), 백오프는 `NEXT_RETRY_AT` 영속화(Phase 7 재사용). Pull은 워터마크 지연(`SYNC_WATERMARK_SECONDS`)으로 시퀀스 갭 함정 방어. 완료 기준 전부 그린: WireMock 시나리오 5, 동일 aggId 순서(실패→보류→재시도→전송), 구독자 격리+비활성 SKIPPED 수렴, 기록 실패=업무 롤백, 페이로드 민감정보 부재
 
-Phase 6+에서 갚아야 할 것:
-- `NoOpIntegrationRecorder` — Phase 6에서 실제 구현(Outbox+ChangeLog INSERT)을 붙이고 **이 클래스를 삭제**한다(조건부 등록이 아니라 삭제). 서비스·reconciler는 무수정
+다음은 설계서 §13.2의 **Phase 7 — 배치**: 8장 잡 10종(`eligibilityRefreshJob`·`futureAppointApplyJob`·`outboxRetryJob`·`hrSnapshotFile` 등). 완료 기준은 시나리오 2 + 6b(배치 래퍼+멱등).
+
+Phase 7+에서 갚아야 할 것:
 - **Phase 7 `futureAppointApplyJob`** — `AppointmentApplyService`를 **감싸기만** 한다(반영 규칙 재구현 금지). 시나리오 6b(배치 래퍼+멱등)가 여기서 완결
+- **Phase 7 `outboxRetryJob`** — `TB_IF_DELIVERY.NEXT_RETRY_AT <= 현재`인 FAILED/PENDING을 다시 태운다(릴레이가 쓴 컬럼을 그대로 읽음, §9.2)
 - **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4)
+- **Phase 8 Kafka 발행** — relay의 `EventPublisher` 포트에 kafka 프로파일 구현 추가(설계서 v1.6에서 Phase 8로 미룸). 계좌 복호화 엔드포인트(§7.2 백로그)도 여기
 
 ## 단일 사양(SSOT)
 

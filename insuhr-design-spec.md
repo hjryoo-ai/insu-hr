@@ -1,7 +1,7 @@
 # InsuHR — 보험사 통합 인사관리시스템 설계서
 
 > **문서 목적**: Claude Code에서 이 문서만으로 시스템을 단계적으로 구현할 수 있도록 작성한 구현용 설계서 (포트폴리오 프로젝트)
-> **버전**: 1.7 / 작성일: 2026-07-17 / 최종 개정: 2026-07-18 ([개정 이력](#개정-이력))
+> **버전**: 1.9 / 작성일: 2026-07-17 / 최종 개정: 2026-07-18 ([개정 이력](#개정-이력))
 > **기술 스택**: Java 21 LTS · Spring Boot 4.1.0 · Oracle Database 23ai
 
 ---
@@ -298,6 +298,7 @@ Oracle
 - 비즈니스 규칙(위촉 가능 여부, 모집자격 계산, 상태 전이)은 반드시 `insuhr-domain`의 도메인 서비스/엔티티 메서드에 위치. Controller/Application Service에는 규칙을 두지 않는다.
 - 기준정보 변경이 발생하는 모든 Application Service 메서드는 **같은 트랜잭션 안에서** `TB_IF_OUTBOX`에 이벤트를 INSERT 한다(9장).
 - 조회 전용 복잡 쿼리(현황판, 통계, 배치 Reader)는 `*QueryDao` 클래스에 `JdbcClient` + 네이티브 SQL로 작성하고, JPA 엔티티를 반환하지 않고 전용 record DTO를 반환한다.
+- **QueryDao의 쓰기 예외 — 릴레이 팬아웃 (v1.8).** QueryDao는 원칙적으로 조회 전용이지만, 릴레이 팬아웃(9.2)의 `TB_IF_DELIVERY` 생성은 **`JdbcClient`의 `INSERT ... SELECT ... WHERE NOT EXISTS`(또는 MERGE) 한 문장**으로 쓴다. JPA로 짜면 `UQ(EVENT_ID, SUBSCRIBER_ID)` 위반이 영속성 컨텍스트를 rollback-only로 오염시켜(5.2·10.1.1의 Phase 2 함정) 같은 트랜잭션 후속 처리가 죽는다. `WHERE NOT EXISTS`는 위반을 애초에 일으키지 않고(UQ는 크래시 재실행 백스톱으로만 남는다), "구독자 × TOPIC_FILTER × 미존재" 필터가 SQL 한 방이라 성능도 낫다 — 인프라 계층의 벌크 쓰기라 이 예외를 둔다.
 
 ### 4.4 패키지 명명
 
@@ -860,14 +861,14 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | POST | /agents/{agentId}/contracts/{contractId}/account | **백로그 (v1.6)** — 지급계좌 복호화 조회. `agent.account.decrypt` 권한 + 사유 본문(POST+사유 일반 규칙, 7.1). 이벤트·스냅샷은 계좌를 싣지 않으므로(9.3, 민감정보 부재 테스트) 수수료시스템이 계좌를 얻는 **유일한 경로**가 이 엔드포인트다. 미구현이면 "이벤트에도 API에도 없는" 데이터가 된다. 구현 시 `TB_PRIVACY_ACCESS_LOG` 기록 |
 | GET | /agents/{agentId}/genealogy | 도입 계보 트리 (재귀: CONNECT BY 또는 재귀 CTE) |
 
-**연계 (IFC)** — 시스템 계정 전용
+**연계 (IFC)** — `/sync/*`는 외부 **시스템 계정**(SYSTEM 역할), `/admin/*`는 **연계 운영자**(IT_ADMIN, `integration.admin`). 데이터를 받는 주체와 연계를 관리하는 주체가 다르므로 권한을 분리한다(v1.9).
 
-| Method | Path | 설명 |
-|---|---|---|
-| GET | /sync/changes?aggType=&cursor=&size= | 변경분 Pull (TB_IF_CHANGE_LOG 키셋 커서) |
-| GET | /sync/snapshot/agents?asOfDate= · /employees · /orgs | 전체 스냅샷 조회 (대량, 스트리밍) |
-| GET/POST/PUT | /admin/subscribers | 구독 시스템 관리 |
-| POST | /admin/outbox/{eventId}/resend | 이벤트 수동 재전송 |
+| Method | Path | 권한 | 설명 |
+|---|---|---|---|
+| GET | /sync/changes?aggType=&cursor=&size= | `sync.read` | 변경분 Pull (TB_IF_CHANGE_LOG 키셋 커서 + 워터마크 지연 9.4) |
+| GET | /sync/snapshot/agents?asOfDate= · /employees · /orgs | `sync.export` | 전체 스냅샷 조회 (대량, 스트리밍) |
+| POST/GET | /admin/subscribers · /{id}/activate · /{id}/deactivate | `integration.admin` | 구독 시스템 관리(비활성 시 미전송분 SKIPPED 수렴 9.2) |
+| POST | /admin/outbox/{eventId}/resend | `integration.admin` | FAILED 전달 레코드를 PENDING으로 되돌려 재전송 |
 
 **공통/관리**
 
@@ -973,6 +974,14 @@ POST /api/v1/agents/1024/appoint
 - **순서 게이트는 (구독자, aggId) 단위.** 죽은 구독자 하나가 다른 구독자의 전달을 막지 않는다. 특정 구독자에게 aggX의 이벤트 N이 미전송이면, 그 구독자에게 N+1을 보류할 뿐 다른 구독자·다른 aggId는 흐른다. **구독자 격리**를 WireMock 테스트로 검증하고 완료 기준에 넣는다.
 - **비활성 구독자의 종결 = SKIPPED (v1.7).** 미전송 전달 레코드를 남긴 채 구독자가 비활성화(`USE_YN='N'`)되면 Outbox 요약이 영원히 수렴 못 한다. 비활성화 시 그 구독자의 미전송(PENDING/FAILED) 레코드를 **SKIPPED**로 종결하고, Outbox 요약 규칙을 **"전 전달 레코드가 SENT 또는 SKIPPED면 SENT"** 로 둔다(원래 DDL의 SKIPPED가 여기서 제 용도를 찾는다). 구독자 격리 테스트에 이 케이스를 한 줄 더한다.
 - **폴러 인덱스(V13).** 릴레이는 폴링 루프라 두 쿼리가 시스템 최다 실행 SQL이 된다 — 전달 픽업 `IX_DELIVERY_PICKUP(SUBSCRIBER_ID, STATUS_CD, NEXT_RETRY_AT)`, 순서 게이트 `IX_DELIVERY_GATE(SUBSCRIBER_ID, AGG_TYPE, AGG_ID, DELIVERY_ID)`. V13을 여는 김에 함께 넣었다.
+
+**릴레이 상태 전이·소비 표시 (v1.8 — 릴레이 세션 진입 확정)**
+
+- **Outbox 소비 표시 = `READY → FANNED_OUT`.** 팬아웃이 어떤 Outbox 행을 이미 처리했는지 상태로 안다 — 팬아웃 단계는 `READY`만 집어 전달 레코드를 만들고 그 행을 `FANNED_OUT`으로 전이시킨다. `UQ(EVENT_ID, SUBSCRIBER_ID)`는 팬아웃이 전달 레코드를 만든 뒤 `FANNED_OUT` 전이 전에 죽은 경우의 **크래시 재실행 백스톱**일 뿐(재실행 시 `WHERE NOT EXISTS`가 기존 레코드를 건너뛴다) — 정상 흐름의 소비 표시는 상태 전이가 한다. Outbox 상태: `READY → FANNED_OUT → SENT`(요약), 값 집합에 `FANNED_OUT` 추가.
+- **구독자 0명 이벤트 = 즉시 `SENT`(전달 대상 없음).** 매칭 구독자가 0명이면 전달 레코드가 하나도 안 생겨 "전 전달 레코드가 SENT/SKIPPED" 요약 규칙이 **공허하게 참**이 된다. 이를 명시적으로 `READY → SENT`(대상 없음) 종결로 정의한다 — 안 그러면 그 Outbox 행이 `READY`도 `SENT`도 아닌 유령으로 영원히 남는다. 팬아웃 단계에서 삽입 건수가 0이면 곧바로 SENT.
+- **게이트의 종결 집합 = {SENT, SKIPPED}.** "선행 미전송" 판정을 상태 집합으로 못박는다 — 종결(후행 통과) = {SENT, SKIPPED}, 선행이 {PENDING, FAILED} 중 하나면 후행 보류. `FAILED`(재시도 소진)도 후행을 막는다(순서 유지) — 수동 재전송으로 재개되거나 구독자 비활성화로 `SKIPPED` 종결돼야 후행이 풀린다. **`SKIPPED`가 후행을 막지 않는다**는 점이 비활성 종결 결정과 순서 게이트를 아귀 맞춘다.
+- **요약 갱신의 주체 = 종결 시점의 형제 검사.** 전달 레코드가 종결(SENT/SKIPPED)될 때마다 같은 `EVENT_ID`의 형제를 검사해 전부 종결이면 Outbox 요약을 `SENT`로 올린다. **단일 릴레이 인스턴스 가정(위 SKIP LOCKED 항)** 아래 팬아웃·전달 두 단계를 한 루프에서 순차 실행하므로 형제 검사·요약 갱신에 경합이 없어 락 없이 성립한다 — 요약 정합성은 이 단일 인스턴스 가정에 의존한다.
+- **전달 레코드 신규 = `PENDING`, `NEXT_RETRY_AT` 기본 생성시각(V13).** 픽업 쿼리가 `STATUS='PENDING' AND NEXT_RETRY_AT <= 현재` 단일 술어로 떨어져 `IX_DELIVERY_PICKUP`을 깔끔히 탄다(NULL-or 분기 제거). 실패 시 `RETRY_CNT++` + `NEXT_RETRY_AT = 현재 + 백오프`로 `PENDING` 유지, 한도(`OUTBOX_MAX_RETRY`) 초과 시 `FAILED`(수동 재전송 대상).
 - **SKIP LOCKED와 게이트의 상호작용.** "선행 미전송 존재" 검사는 잠금과 무관한 일반 조회여야 한다 — 다른 워커가 잠근 선행 행도 "미전송"으로 보여야 후행이 보류돼 순서가 지켜진다. 포트폴리오는 **단일 릴레이 인스턴스**를 가정한다. 스케일아웃하려면 aggId 해시로 파티셔닝해 같은 aggId를 한 워커가 처리하는 것이 전제다.
 - **서명은 전송 바이트 그대로.** 직렬화를 한 번만 하고 그 바이트를 서명·전송한다(서명용 재직렬화는 바이트가 달라질 수 있다). 서명 입력 = `timestamp + "." + body`, 헤더 `X-InsuHR-Timestamp`. 수신측은 타임스탬프 스큐(정책값) 밖이면 거절 — 여기까지가 리플레이 방어다.
 - **백오프는 `NEXT_RETRY_AT` 컬럼으로 영속화.** 인메모리 대기면 재기동 시 백오프가 리셋된다. 컬럼으로 두면 Phase 7 `outboxRetryJob`이 같은 필드(`NEXT_RETRY_AT <= 현재`)를 읽어 자연히 이어진다.
@@ -1313,6 +1322,8 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| 1.9 | 2026-07-18 | **Phase 6 구현 완료 반영** — ① **연계 엔드포인트 권한 분리**(7.2): `/sync/*`는 외부 시스템 계정(`sync.read`/`sync.export`, SYSTEM), `/admin/subscribers`·`/admin/outbox/resend`는 연계 운영자(`integration.admin`, IT_ADMIN). 데이터 수신 주체와 연계 관리 주체가 달라 권한을 나눈다(V13 시드) ② **relay 2단계 폴러 구현 실증**(9.2): 팬아웃(JdbcClient `INSERT..SELECT..WHERE NOT EXISTS`, `READY→FANNED_OUT`/대상없음 `SENT`) + 전달(순서 게이트 (구독자,aggId), 종결집합 {SENT,SKIPPED}, HMAC 서명 `timestamp+"."+body`, 백오프 `NEXT_RETRY_AT` 영속). WireMock 시나리오 5 / 동일 aggId 순서 / 구독자 격리+비활성 SKIPPED 수렴 그린 ③ **ORA-18716 회피 설정은 JPA 전 모듈 공통**(3.0): `preferred_instant_jdbc_type=TIMESTAMP`+`jdbc.time_zone=UTC`가 api뿐 아니라 batch·relay에도 필요 — 누락 시 감사컬럼 Instant 읽기에서 실패(릴레이 테스트로 실증, batch도 선반영). 테스트 150개 그린 |
+| 1.8 | 2026-07-18 | **릴레이 세션 진입 — 팬아웃 구현 의미론 4건 + JdbcClient 쓰기 예외** — ① **JdbcClient 팬아웃 쓰기 예외**(4.3): 전달 레코드 생성은 JPA가 아니라 `INSERT ... SELECT ... WHERE NOT EXISTS` 한 문장 — `UQ(EVENT_ID,SUBSCRIBER_ID)` 위반의 rollback-only 오염(Phase 2 함정) 회피, UQ는 크래시 백스톱으로만, 필터가 SQL 한 방이라 성능도 우위 ② **Outbox 소비 표시 `READY→FANNED_OUT`**(9.2, 6.4·V13): 팬아웃은 READY만 집어 처리 후 FANNED_OUT 전이, UQ는 백스톱. Outbox 상태 집합에 FANNED_OUT 추가 ③ **구독자 0명 = 즉시 SENT**(9.2): 전달 레코드 0개면 "전부 종결" 요약이 공허참 → 명시적 READY→SENT(대상 없음)로 종결, 유령 상태 방지 ④ **게이트 종결 집합 {SENT, SKIPPED}**(9.2): 선행 {PENDING, FAILED}면 후행 보류, FAILED도 순서상 후행을 막음, SKIPPED는 안 막음(비활성 종결과 정합) ⑤ **요약 갱신 = 종결 시 형제 검사**(9.2): 단일 릴레이 인스턴스 가정 아래 락 없이 성립, 정합성이 그 가정에 의존함을 명시 ⑥ **전달 신규=PENDING+`NEXT_RETRY_AT` 기본 생성시각**(9.2, V13): 픽업이 `PENDING AND NEXT_RETRY_AT<=현재` 단일 술어로 `IX_DELIVERY_PICKUP` 탑승, NULL 분기 제거 |
 | 1.7 | 2026-07-18 | **Phase 6 진입 — 릴레이 팬아웃 파생 결정 (`TB_IF_DELIVERY` 신설에서 따라 나온 3건)** — ① **팬아웃 시점 = 릴레이 픽업 + 2단계 분리**(9.2): 전달 레코드는 recorder가 아니라 릴레이 픽업 시점의 활성 구독자×`TOPIC_FILTER`로 생성. 릴레이 ①팬아웃(Outbox를 `EVENT_ID` 순 소비→전달 레코드 생성) ②전달(구독자별 자기 레코드 순서 전송) 2단계. 순서 게이트가 "같은 (구독자, aggId) 선행 전달 레코드 미전송이면 후행 보류"로 단순화(Outbox 조인 불요), 신규 구독자 비소급 수신이 정의에서 공짜로 나옴 → 9.1 스냅샷+워터마크 온보딩과 정합 ② **비활성 구독자 종결 = SKIPPED**(9.2): 미전송분 남긴 채 `USE_YN='N'`이면 Outbox 요약이 수렴 못 함 → 비활성화 시 미전송(PENDING/FAILED) 레코드를 SKIPPED로 종결, 요약 규칙 "전 레코드 SENT|SKIPPED면 SENT". 구독자 격리 테스트에 케이스 추가(13.2) ③ **폴러 인덱스 2종을 V13에 선반영**(6.7, V13): 전달 픽업 `(SUBSCRIBER_ID, STATUS_CD, NEXT_RETRY_AT)` + 순서 게이트 `(SUBSCRIBER_ID, AGG_TYPE, AGG_ID, DELIVERY_ID)` — 폴링 루프 최다 실행 SQL. `TB_IF_DELIVERY` 표(`SYSTEM_CD`→`SUBSCRIBER_ID` FK, `AGG_TYPE/AGG_ID` 비정규화, `UQ(EVENT_ID,SUBSCRIBER_ID)` 팬아웃 멱등)를 미태그 V13에 확정. ※ V13 체크섬이 바뀌므로 구 V13이 적용된 로컬 도커 볼륨은 릴레이 세션 전 재생성/`flyway repair` 필요(Testcontainers는 무관) |
 | 1.6 | 2026-07-18 | **Phase 5 진입 결정 (모집자격 판정)** — ① **판정과 집행 분리**(5.4): `evaluate(agentId, asOfDate)`는 순수 함수(전이 없음), 전이는 `AgentEligibilityReconciler`가 상태머신 관문으로. Phase 7 배치가 판정 함수 재사용, `asOfDate`로 앵커 Clock 테스트 적용 ② **보수교육 null 기저선**(5.4): 무이력이면 기한 = `LAST_APPOINT_DT` + 주기 — null을 통과/미충족 어느 쪽으로 읽어도 버그. 3케이스 테스트 ③ **경계 inclusive 통일**(5.4): 보수교육·보증 `>=오늘`, 제재 `START<=오늘<=END`(END null=무기한) ④ **종합 `RECRUIT_ELIG_YN` 정의**(5.4): 공통 게이트 통과 AND 모집가능 종목≥1 — 변액만 없어도 Y ⑤ **복수 보증 합산**(5.4) 기준 `MIN_GRNT_AMT` 비교 ⑥ **`RECRUIT_ELIG_YN` 의미 승격**(5.4, 6.4): "배치 스냅샷"→"마지막 계산 결과", 실시간·배치 둘 다 갱신, 종합 판정이 바뀔 때만 `agent.eligibility.changed` 발행 ⑦ **재위촉 요건 신선도**(5.4, 부록 A): `REG_EDU_REUSE_ON_REAPPOINT` 정책값(기본 Y) ⑧ **Phase 5 완료 기준에 스텁 소스 삭제 명시**(13.2): `AlwaysSatisfiedRequirementChecker`는 통제를 끄는 스텁이라 주입 교체가 아니라 소스 제거로 컴파일 대상에서 없애야 회귀 불가 — 시나리오 1b + resume 게이트 `@Disabled` 해제 포함 ⑨ **Phase 5 리뷰 — 활성화 워크플로 불변식**(5.4): `registerAssociation`은 자격 삽입→전이→reconcile 순서로, 워크플로 종료 시 스냅샷 YN=evaluate() 결과("낡은 N 창구" 제거, 보증 만료 시 즉시 SUSPENDED가 정답). 자격 쓰기만 reconcile 유발·전이는 유발 안 함(재진입 방지) ⑩ **Phase 6 진입 결정**(9.1·9.2·9.4·13.2): at-least-once+eventUuid 멱등, 서명에 타임스탬프(리플레이 방지), 순서 게이트(같은 aggId 미전송 선행 있으면 후행 보류), Pull 커서 워터마크 지연(`SYNC_WATERMARK_SECONDS` 기본 5 — 시퀀스 갭 함정), 신규 구독자는 스냅샷+워터마크 커서(백필 아님), Jackson 3 `JsonMapper`, 페이로드 민감정보 부재 테스트, `NoOpIntegrationRecorder` 소스 삭제, Kafka는 Phase 8로 미룸 |
 | 1.5 | 2026-07-18 | **Phase 3 실증 반영 + Phase 4 진입 결정** — ① **`Clock` 파생 규칙**(6.2): 주입 clock 하나에서 저장 시각은 `Instant.now(clock)`(존 무관, UTC 적재 규약 유지), 업무 날짜는 `LocalDate.now(clock)`(KST), `LocalDateTime.now(clock)`은 금지. 앵커 테스트(`2026-08-01T00:05+09:00`)가 규약을 지킨다 ② **트랜잭션 경계 원칙**(10.1.1): 상태를 바꾸는 도메인 서비스는 자기 `@Transactional`(REQUIRED)을 선언한다 — `recalculate()`가 "온라인에서만 우연히 flush"되던 함정. Phase 7 배치 청크 트랜잭션과도 REQUIRED로 무충돌 ③ **마이그레이션 불변성 정책**(4.2): `phase-*` 태그에 든 파일은 불변, 이후 변경은 ALTER 추가(체크섬 불일치·validate 실패 방지) ④ **전이표가 코드의 단일 원천**(5.3): enum 맵 + 5×5 전 행렬 테스트 ⑤ **전이는 원자적**(5.3, 6.4): `TB_AGENT.VERSION` 낙관적 잠금 → 동시 전이 409, 8스레드 테스트 ⑥ **위촉 요건검증 SPI 분리**(5.3): `RecruitmentRequirementChecker` 스텁(Phase 4)→실판정(Phase 5), IntegrationRecorder와 같은 교체 패턴. **시나리오 1을 1a(Phase 4 422 성형)/1b(Phase 5 실판정)로 분할**(12장) ⑦ **재위촉 스냅샷 의미론**(5.3): 마스터=현재, 과거는 이력에만 — `TERMINATE_DT`/`RSN`→NULL, `RECRUIT_ELIG_YN`='N', `FIRST_APPOINT_DT` 보존 ⑧ **resume 판정 게이트는 Phase 5**(5.3): Phase 4는 수동, `@Disabled` 테스트로 빚 표시 ⑨ **계보 순환 방어**(5.3): 도입자 지정 시 조상 체인 검사 + `NOCYCLE` ⑩ **AGENT_CD 시퀀스 채번**(6.4), **인물당 설계사 0..1 유니크 인덱스**(6.4 `UX_AGENT_PERSON`), **`OrgService.close()`의 TB_AGENT 검사** 완성 + `@Disabled` 제거 |
