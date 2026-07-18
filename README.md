@@ -1,5 +1,9 @@
 # InsuHR — 보험사 통합 인사관리시스템
 
+<!-- CI 배지: 저장소 공개 + 첫 GitHub Actions 그린 확인 후, OWNER/REPO를 실제 값으로 바꿔 아래 한 줄을 활성화한다.
+[![build](https://github.com/OWNER/REPO/actions/workflows/build.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/build.yml)
+-->
+
 임직원과 설계사(FC)를 **하나의 인물 모델** 위에서 통합 관리하고, 인사 기준정보의 변경을 **이벤트 · Pull API · 배치 파일 3계층**으로 타 시스템에 동기화하는 백엔드 시스템입니다. 설계서를 먼저 쓰고, 구현 과정의 실증으로 설계서를 교정해 가며(v1.0 → v2.3) 완성한 포트폴리오 프로젝트입니다.
 
 `Java 21 LTS` · `Spring Boot 4.1` · `Oracle 23ai` · `Spring Batch 6` · `Flyway V1~V17` · **테스트 168개 (실 Oracle Testcontainers)** · `@Disabled 0`

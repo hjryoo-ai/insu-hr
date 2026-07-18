@@ -1,0 +1,28 @@
+name: build
+
+# 전체 빌드 + 테스트 한 잡. 테스트는 실 Oracle/Kafka Testcontainers를 쓰며,
+# ubuntu-latest 러너에는 Docker가 사전 설치돼 있어 그대로 돈다.
+# 주의: 첫 실행은 gvenzl/oracle-free·apache/kafka 이미지 pull로 느리다(수 분).
+#       필요하면 이미지 캐시 액션을 추가해 단축할 수 있다.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Corretto)
+        uses: actions/setup-java@v4
+        with:
+          distribution: corretto
+          java-version: "21"
+          cache: gradle
+
+      - name: Build (spotless + 168 tests on real Oracle/Kafka Testcontainers)
+        run: ./gradlew build --no-daemon
