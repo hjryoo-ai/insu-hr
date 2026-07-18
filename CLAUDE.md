@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~8 완료 (v1.0 릴리스)** (2026-07-18). `./gradlew build` 그린, 테스트 168개(`@Disabled` 0). 마이그레이션 V1~V17. **v1.1 백로그(서열)는 설계서 §13.4** — 변경감사 AOP·비밀번호 변경 집행·Pull 소비자 계약 테스트·릴레이 스케일아웃. 릴리스 후 규율: 코드/설정 변경=`v1.0.x`, 문서만=태그 없음, `v1.0` 태그 불변.
+**Phase 0~8 완료 (v1.0 릴리스)** (2026-07-18). `./gradlew build` 그린, 테스트 168개(`@Disabled` 0). 마이그레이션 V1~V17. **v1.1 백로그(서열)는 설계서 §13.4** — 변경감사 AOP·비밀번호 변경 집행·Pull 소비자 계약 테스트·릴레이 스케일아웃. 릴리스 후 규율(§13.4): **태그 대상=배포 산출물(5모듈 코드·설정)** — 문서·데모·CI 툴링 변경은 태그 없이 쌓고, 배포 산출물 변경만 `v1.0.x`, `v1.0` 태그 불변.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
