@@ -1,0 +1,20 @@
+# .gitleaks.toml — 시크릿 스캔 설정 (공개 전 게이트).
+#
+# 기본 룰셋을 그대로 쓰되, 알려진 false positive(테스트 픽스처)만 허용한다.
+# 실제 시크릿은 환경변수/시크릿 주입이며(설계서 §10.3) 히스토리에 없다.
+# 로컬 개발용 'local-dev-only' 기본값(crypto-common.yml)은 자기설명적 더미다.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "테스트 픽스처·로컬 개발 더미 — 실제 시크릿 아님"
+regexes = [
+  # deniesForgedToken 테스트의 위조 JWT (서명이 'bogus-signature'). 401 거부를 검증하는 음성 테스트.
+  '''bogus-signature''',
+  # crypto-common.yml 등의 로컬 개발 전용 자기설명 더미 기본값.
+  '''local-dev-only''',
+]
+paths = [
+  '''insuhr-api/src/test/java/com/portfolio/insuhr/api/auth/AuthIntegrationTest\.java''',
+]
