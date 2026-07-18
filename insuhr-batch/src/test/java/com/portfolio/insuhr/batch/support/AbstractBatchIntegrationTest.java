@@ -64,8 +64,11 @@ public abstract class AbstractBatchIntegrationTest {
   void cleanBusinessTables() {
     List<String> tables =
         List.of(
+            "TB_NOTICE_QUEUE",
+            "TB_DQ_FINDING",
             "TB_IF_SEND_LOG",
             "TB_IF_DELIVERY",
+            "TB_IF_SUBSCRIBER",
             "TB_IF_OUTBOX",
             "TB_IF_CHANGE_LOG",
             "TB_MISSELL_CASE",
@@ -78,6 +81,8 @@ public abstract class AbstractBatchIntegrationTest {
             "TB_AGENT_APPOINT_HIST",
             "TB_EMP_APPOINT",
             "TB_AGENT",
+            "TB_LEAVE_REQ",
+            "TB_LEAVE_GRANT",
             "TB_EMP",
             "TB_ORG_HIST",
             "TB_PERSON",
@@ -176,6 +181,12 @@ public abstract class AbstractBatchIntegrationTest {
    * 유일한 실격 변수가 되게 한다.
    */
   protected long seedActiveEligibleLifeAgent(long personId, long orgId, LocalDate ceNextDueDt) {
+    return seedActiveEligibleLifeAgent(personId, orgId, ceNextDueDt, LocalDate.of(2035, 1, 1));
+  }
+
+  /** 위와 같되 유일한 재정보증의 만료일을 지정한다 — guaranteeExpiryJob 테스트가 만료 경계를 조작하려면 필요. */
+  protected long seedActiveEligibleLifeAgent(
+      long personId, long orgId, LocalDate ceNextDueDt, LocalDate grntEndDt) {
     String cd = "A" + uniq();
     jdbcClient
         .sql(
@@ -212,8 +223,9 @@ public abstract class AbstractBatchIntegrationTest {
             "INSERT INTO TB_FIN_GUARANTEE (AGENT_ID, GRNT_TYPE_CD, GRNT_AMT, ISSUER_NM, POLICY_NO,"
                 + " START_DT, END_DT, STATUS_CD, CREATED_BY)"
                 + " VALUES (:a, 'SURETY_INS', 10000000, '보증사', 'P-1', DATE '2026-01-01',"
-                + " DATE '2035-01-01', 'ACTIVE', 'BATCH-TEST')")
+                + " :grntEnd, 'ACTIVE', 'BATCH-TEST')")
         .param("a", agentId)
+        .param("grntEnd", grntEndDt)
         .update();
     jdbcClient
         .sql(
@@ -259,6 +271,252 @@ public abstract class AbstractBatchIntegrationTest {
         .param("id", aggId)
         .param("et", eventType)
         .query(Integer.class)
+        .single();
+  }
+
+  // ── Phase 7 후속 잡용 시드/검증 헬퍼 ──────────────────────────────────────
+
+  /** 만료일·상태를 지정한 재정보증 한 건을 심고 GRNT_ID를 돌려준다. */
+  protected long seedGuarantee(long agentId, LocalDate endDt, String statusCd) {
+    String policyNo = "PN" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_FIN_GUARANTEE (AGENT_ID, GRNT_TYPE_CD, GRNT_AMT, ISSUER_NM, POLICY_NO,"
+                + " START_DT, END_DT, STATUS_CD, CREATED_BY)"
+                + " VALUES (:a, 'SURETY_INS', 10000000, '보증사', :pno, DATE '2020-01-01',"
+                + " :end, :st, 'BATCH-TEST')")
+        .param("a", agentId)
+        .param("pno", policyNo)
+        .param("end", endDt)
+        .param("st", statusCd)
+        .update();
+    return jdbcClient
+        .sql("SELECT GRNT_ID FROM TB_FIN_GUARANTEE WHERE POLICY_NO = :pno")
+        .param("pno", policyNo)
+        .query(Long.class)
+        .single();
+  }
+
+  protected String guaranteeStatus(long grntId) {
+    return jdbcClient
+        .sql("SELECT STATUS_CD FROM TB_FIN_GUARANTEE WHERE GRNT_ID = :id")
+        .param("id", grntId)
+        .query(String.class)
+        .single();
+  }
+
+  /** 어떤 대상의 특정 유형 알림 총 건수(마일스톤 무관). */
+  protected int noticeCount(String noticeTypeCd, long targetId) {
+    return jdbcClient
+        .sql("SELECT COUNT(*) FROM TB_NOTICE_QUEUE WHERE NOTICE_TYPE_CD = :t AND TARGET_ID = :id")
+        .param("t", noticeTypeCd)
+        .param("id", targetId)
+        .query(Integer.class)
+        .single();
+  }
+
+  /** 특정 (유형,대상,마일스톤) 알림 건수 — dedup 검증용. */
+  protected int noticeCount(String noticeTypeCd, long targetId, String milestoneCd) {
+    return jdbcClient
+        .sql(
+            "SELECT COUNT(*) FROM TB_NOTICE_QUEUE"
+                + " WHERE NOTICE_TYPE_CD = :t AND TARGET_ID = :id AND MILESTONE_CD = :m")
+        .param("t", noticeTypeCd)
+        .param("id", targetId)
+        .param("m", milestoneCd)
+        .query(Integer.class)
+        .single();
+  }
+
+  protected int findingCount(String ruleCd) {
+    return jdbcClient
+        .sql("SELECT COUNT(*) FROM TB_DQ_FINDING WHERE RULE_CD = :r")
+        .param("r", ruleCd)
+        .query(Integer.class)
+        .single();
+  }
+
+  protected int findingCount(String ruleCd, long targetId) {
+    return jdbcClient
+        .sql("SELECT COUNT(*) FROM TB_DQ_FINDING WHERE RULE_CD = :r AND TARGET_ID = :id")
+        .param("r", ruleCd)
+        .param("id", targetId)
+        .query(Integer.class)
+        .single();
+  }
+
+  /** 입사일·재직상태를 지정한 임직원을 심는다. */
+  protected long seedEmpHired(long personId, long orgId, LocalDate hireDt, String statusCd) {
+    String empNo = "E" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_EMP (PERSON_ID, EMP_NO, EMP_TYPE_CD, ORG_ID, HIRE_DT, EMP_STATUS_CD,"
+                + " CREATED_BY) VALUES (:pid, :no, 'REGULAR', :org, :hire, :st, 'BATCH-TEST')")
+        .param("pid", personId)
+        .param("no", empNo)
+        .param("org", orgId)
+        .param("hire", hireDt)
+        .param("st", statusCd)
+        .update();
+    return jdbcClient
+        .sql("SELECT EMP_ID FROM TB_EMP WHERE EMP_NO = :no")
+        .param("no", empNo)
+        .query(Long.class)
+        .single();
+  }
+
+  /** USE_YN='N'(폐지) 조직을 심는다 — dataQualityJob EMP_ORG_ABOLISHED 룰용. */
+  protected long seedAbolishedOrg() {
+    String cd = "O" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_ORG (ORG_CD, ORG_NM, ORG_TYPE_CD, ORG_LVL, VALID_FROM_DT, USE_YN,"
+                + " CREATED_BY)"
+                + " VALUES (:cd, :nm, 'BRANCH', 1, DATE '2020-01-01', 'N', 'BATCH-TEST')")
+        .param("cd", cd)
+        .param("nm", "폐지조직-" + cd)
+        .update();
+    return jdbcClient
+        .sql("SELECT ORG_ID FROM TB_ORG WHERE ORG_CD = :cd")
+        .param("cd", cd)
+        .query(Long.class)
+        .single();
+  }
+
+  /** 자격·협회 없이 ACTIVE인 설계사를 심는다 — dataQuality/licenseValidity 룰의 최소 대상. */
+  protected long seedBareActiveAgent(long personId, long orgId) {
+    String cd = "A" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_AGENT (PERSON_ID, AGENT_CD, CHANNEL_CD, ORG_ID, AGENT_STATUS_CD,"
+                + " FIRST_APPOINT_DT, LAST_APPOINT_DT, RECRUIT_ELIG_YN, CREATED_BY)"
+                + " VALUES (:pid, :cd, 'FC', :org, 'ACTIVE', DATE '2026-01-01', DATE '2026-01-01',"
+                + " 'N', 'BATCH-TEST')")
+        .param("pid", personId)
+        .param("cd", cd)
+        .param("org", orgId)
+        .update();
+    return jdbcClient
+        .sql("SELECT AGENT_ID FROM TB_AGENT WHERE AGENT_CD = :cd")
+        .param("cd", cd)
+        .query(Long.class)
+        .single();
+  }
+
+  protected void seedLicense(long agentId, String typeCd, String statusCd) {
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_AGENT_LICENSE (AGENT_ID, LICENSE_TYPE_CD, LICENSE_NO, REG_DT, STATUS_CD,"
+                + " CREATED_BY) VALUES (:a, :type, :no, DATE '2026-01-01', :st, 'BATCH-TEST')")
+        .param("a", agentId)
+        .param("type", typeCd)
+        .param("no", "L" + uniq())
+        .param("st", statusCd)
+        .update();
+  }
+
+  protected void seedAssoc(long agentId, String assocCd, String statusCd) {
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_ASSOC_REG (AGENT_ID, ASSOC_CD, ASSOC_REG_NO, REG_DT, STATUS_CD,"
+                + " CREATED_BY) VALUES (:a, :assoc, :no, DATE '2026-01-01', :st, 'BATCH-TEST')")
+        .param("a", agentId)
+        .param("assoc", assocCd)
+        .param("no", "AR" + uniq())
+        .param("st", statusCd)
+        .update();
+  }
+
+  /** 그 해 부여된 연차 일수(없으면 -1). */
+  protected int leaveGrantDays(long empId, int yearNo) {
+    return jdbcClient
+        .sql(
+            "SELECT NVL((SELECT GRANT_DAYS FROM TB_LEAVE_GRANT"
+                + " WHERE EMP_ID = :e AND YEAR_NO = :y), -1) FROM DUAL")
+        .param("e", empId)
+        .param("y", yearNo)
+        .query(Integer.class)
+        .single();
+  }
+
+  protected int leaveGrantCount(long empId, int yearNo) {
+    return jdbcClient
+        .sql("SELECT COUNT(*) FROM TB_LEAVE_GRANT WHERE EMP_ID = :e AND YEAR_NO = :y")
+        .param("e", empId)
+        .param("y", yearNo)
+        .query(Integer.class)
+        .single();
+  }
+
+  /** WEBHOOK 구독자를 심고 SUBSCRIBER_ID를 돌려준다 — 전달 레코드 FK용. */
+  protected long seedSubscriber() {
+    String systemCd = "SYS" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_IF_SUBSCRIBER (SYSTEM_CD, SYSTEM_NM, DELIVERY_TYPE_CD, ENDPOINT_URL,"
+                + " USE_YN, CREATED_BY)"
+                + " VALUES (:cd, :nm, 'WEBHOOK', 'http://localhost/hook', 'Y', 'BATCH-TEST')")
+        .param("cd", systemCd)
+        .param("nm", "구독-" + systemCd)
+        .update();
+    return jdbcClient
+        .sql("SELECT SUBSCRIBER_ID FROM TB_IF_SUBSCRIBER WHERE SYSTEM_CD = :cd")
+        .param("cd", systemCd)
+        .query(Long.class)
+        .single();
+  }
+
+  /** OCCURRED_AT을 며칠 전으로 지정한 Outbox 이벤트를 심고 EVENT_ID를 돌려준다. */
+  protected long seedOutbox(
+      String aggType, long aggId, String eventType, String statusCd, int occurredDaysAgo) {
+    String uuid = "u" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_IF_OUTBOX (EVENT_UUID, AGG_TYPE, AGG_ID, EVENT_TYPE, PAYLOAD, STATUS_CD,"
+                + " OCCURRED_AT)"
+                + " VALUES (:uuid, :t, :id, :et, '{}', :st,"
+                + " SYS_EXTRACT_UTC(SYSTIMESTAMP) - NUMTODSINTERVAL(:days, 'DAY'))")
+        .param("uuid", uuid)
+        .param("t", aggType)
+        .param("id", aggId)
+        .param("et", eventType)
+        .param("st", statusCd)
+        .param("days", occurredDaysAgo)
+        .update();
+    return jdbcClient
+        .sql("SELECT EVENT_ID FROM TB_IF_OUTBOX WHERE EVENT_UUID = :uuid")
+        .param("uuid", uuid)
+        .query(Long.class)
+        .single();
+  }
+
+  /** CREATED_AT을 며칠 전으로 지정한 전달 레코드를 심고 DELIVERY_ID를 돌려준다. */
+  protected long seedDelivery(
+      long eventId,
+      long subscriberId,
+      String aggType,
+      long aggId,
+      String statusCd,
+      int createdDaysAgo) {
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_IF_DELIVERY (EVENT_ID, SUBSCRIBER_ID, AGG_TYPE, AGG_ID, STATUS_CD,"
+                + " CREATED_AT)"
+                + " VALUES (:e, :s, :t, :id, :st,"
+                + " SYS_EXTRACT_UTC(SYSTIMESTAMP) - NUMTODSINTERVAL(:days, 'DAY'))")
+        .param("e", eventId)
+        .param("s", subscriberId)
+        .param("t", aggType)
+        .param("id", aggId)
+        .param("st", statusCd)
+        .param("days", createdDaysAgo)
+        .update();
+    return jdbcClient
+        .sql(
+            "SELECT MAX(DELIVERY_ID) FROM TB_IF_DELIVERY WHERE EVENT_ID = :e AND SUBSCRIBER_ID = :s")
+        .param("e", eventId)
+        .param("s", subscriberId)
+        .query(Long.class)
         .single();
   }
 }

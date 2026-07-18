@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~6 완료 + Phase 7 완료 기준 그린** (2026-07-18). `./gradlew build` 그린, 테스트 154개(`@Disabled` 0). 마이그레이션 V1~V14.
+**Phase 0~7 완료** (2026-07-18). `./gradlew build` 그린, 테스트 161개(`@Disabled` 0). 마이그레이션 V1~V15.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 잡은 restart를 의도적으로 안 쓴다 — 매 실행이 새 JobInstance라 실패 시 처음부터 재실행하며, 재계산 멱등(5.5)이 그 전제(§8 v2.0).
 
-**`phase-7` 태그는 보류** — 완료 기준은 그린이지만 §8 잡 로스터 6종이 남아 태그 의미가 갈리지 않게 후속 세션으로 미룬다(사용자 결정). **남은 6잡**(`guaranteeExpiry`·`continuingEduNotice`·`licenseValidity`·`dataQuality`·`annualLeaveGrant`·`outboxDlqSweep`)은 **V15 출력 테이블 신설이 선행**: 범용 `TB_NOTICE_QUEUE`(`UQ(NOTICE_TYPE,TARGET_ID,DUE_DT,MILESTONE)`로 재실행 멱등 — `INSERT…WHERE NOT EXISTS`+행 생성 시에만 `notice.created`, futureAppoint 패턴 재사용) + `TB_DQ_FINDING`(리포트). §8이 참조하던 "알림 대기 테이블"이 §6.3 목록에 없던 누락을 이 설계로 보강. `dataQualityJob`은 Phase 8→Phase 7 후속으로 이동. 후속 완료 기준: V15 + 6잡 + dedup 키 멱등 테스트 + 알림 조건부 발행.
+- Phase 7 후속(6잡 + V15, `phase-7` 태그): **V15** = 범용 `TB_NOTICE_QUEUE`(`UQ(NOTICE_TYPE,TARGET_ID,DUE_DT,MILESTONE)`)·`TB_DQ_FINDING`(`UQ(RULE_CD,TARGET_ID,FOUND_DT)`) — 멱등이 유니크 키에서 나온다(§6.3 "알림 대기 테이블" 누락 보강). `NoticeQueueDao`/`DqFindingDao`가 팬아웃의 `INSERT…WHERE NOT EXISTS` 단문 재사용. **6잡**: `guaranteeExpiryJob`(로스터에서 상태를 직접 바꾸는 유일한 잡 — D-30 알림 + `END_DT<targetDate` EXPIRED 물질화를 도메인 `GuaranteeExpiryService`가 **온라인 `AgentCredentialService`와 같은 규약**으로 소유→reconcile 유발; 판정은 `STATUS_CD`가 아니라 `FinGuarantee.isActiveOn` 기간 술어(`END_DT>=asOf`)를 봐서 `eligibilityRefreshJob`과 **순서 무관**), `continuingEduNoticeJob`(D-60/30/7, **부등식** `DUE_DT<=targetDate+M`+dedup으로 다운타임 뒤 늦은 발화, **행 생성 시에만** `notice.created`), `licenseValidityJob`(살아있는 설계사의 자격 상태 모순=REVOKED 자격·DEREGISTERED 협회), `dataQualityJob`(구조적 결손=폐지 조직 `USE_YN='N'` 재직자·협회 전무 설계사), `annualLeaveGrantJob`(연차=회계연도 일괄로 택일, 근속 정책값 `ANNUAL_LEAVE_*`, `UQ_LEAVE_GRANT` 멱등), `outboxDlqSweepJob`(**관측만** — FAILED·정체를 `TB_DQ_FINDING`에 적재, 재전송 없음). licenseValidity·dataQuality·outboxDlqSweep은 "룰→FINDING" 골격(`DqRule`/`DqFindingDao`/`DqSweepTasklet`)을 **잡은 합치지 않고** 공유(경계는 §8). 잡별 dedup 재실행 멱등 + 알림 조건부 발행 테스트 그린
 
 Phase 8에서 갚아야 할 것:
 - **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4). 익명화는 `person.anonymized` 발행(§8 v2.0)
@@ -27,7 +27,7 @@ Phase 8에서 갚아야 할 것:
 
 ## 단일 사양(SSOT)
 
-`insuhr-design-spec.md`(현재 **v2.0**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
+`insuhr-design-spec.md`(현재 **v2.1**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
 설계서와 다르게 구현해야 할 이유가 있으면 임의로 벗어나지 말고 사용자에게 먼저 알린다.
 
 **설계서가 현실과 어긋나는 것을 발견하면 CLAUDE.md나 코드 주석에만 우회 기록을 남기지 말고 설계서 본문을 개정하고 말미의 개정 이력에 남긴다.** 그렇게 하지 않으면 다음 세션이 "설계서 우선" 규칙을 근거로 정정을 되돌린다. 이 파일에는 결론만 두고 근거·상세는 설계서에 둔다.

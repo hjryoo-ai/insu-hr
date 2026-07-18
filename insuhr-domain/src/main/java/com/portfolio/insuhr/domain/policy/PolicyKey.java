@@ -25,6 +25,15 @@ public enum PolicyKey {
   SYNC_WATERMARK_SECONDS,
   /** Outbox 전송 재시도 한도. 설계서 9.2 v1.6 기본값 5 */
   OUTBOX_MAX_RETRY,
+  /** Outbox/Delivery 정체 감시 임계(분). 설계서 8 v2.0 outboxDlqSweepJob 참고값 */
+  OUTBOX_STALL_MINUTES,
+
+  /** 연차 기본 부여일수(근속 1년↑). 설계서 8 v2.0 기본값 15 */
+  ANNUAL_LEAVE_BASE_DAYS,
+  /** 연차 최대 부여일수 상한. 설계서 8 v2.0 기본값 25 */
+  ANNUAL_LEAVE_MAX_DAYS,
+  /** 가산 연차 1일당 필요 근속연수. 설계서 8 v2.0 기본값 2 */
+  ANNUAL_LEAVE_BONUS_PER_YEARS,
 
   /** 비밀번호 변경 주기(일) */
   PWD_EXPIRE_DAYS,
