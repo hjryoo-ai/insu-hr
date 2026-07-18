@@ -5,6 +5,10 @@ import com.portfolio.insuhr.common.error.ErrorCode;
 /** 설계사 도메인 에러코드 (AGT). 설계서 7.1의 {도메인 3자}-{HTTP류 2자}{일련 2자}. */
 public enum AgentErrorCode implements ErrorCode {
   NOT_FOUND("AGT-4041", 404, "설계사를 찾을 수 없습니다."),
+  /** 계좌 복호화 대상 계약/계좌가 없음 (설계서 7.2 Phase 8). */
+  ACCOUNT_NOT_FOUND("AGT-4042", 404, "복호화할 지급계좌가 없습니다."),
+  /** 복호화 시 사유 입력은 필수다 (설계서 10.2). */
+  PURPOSE_REQUIRED("AGT-4001", 400, "개인정보 열람 사유를 입력해야 합니다."),
 
   ALREADY_AGENT("AGT-4091", 409, "이미 설계사로 등록된 인물입니다."),
   ILLEGAL_TRANSITION("AGT-4092", 409, "현재 상태에서 허용되지 않는 위촉 전이입니다."),

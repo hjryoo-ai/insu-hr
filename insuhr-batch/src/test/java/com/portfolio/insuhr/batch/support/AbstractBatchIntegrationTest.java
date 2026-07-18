@@ -84,6 +84,9 @@ public abstract class AbstractBatchIntegrationTest {
             "TB_LEAVE_REQ",
             "TB_LEAVE_GRANT",
             "TB_EMP",
+            "TB_PRIVACY_PURGE_LEDGER",
+            "TB_PRIVACY_ACCESS_LOG",
+            "TB_PERSON_ADDR",
             "TB_ORG_HIST",
             "TB_PERSON",
             "TB_ORG");
@@ -517,6 +520,112 @@ public abstract class AbstractBatchIntegrationTest {
         .param("e", eventId)
         .param("s", subscriberId)
         .query(Long.class)
+        .single();
+  }
+
+  // ── privacyPurgeJob용 시드/검증 헬퍼 ─────────────────────────────────────
+
+  /** 생성일(CREATED_AT)을 며칠 전으로 지정한 인물을 심는다 — ORPHAN 유예 경계 테스트용. */
+  protected long seedPersonCreatedDaysAgo(int daysAgo) {
+    String hash = "h" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_PERSON (PERSON_NM, RRN_ENC, RRN_HASH, BIRTH_DT, GENDER_CD,"
+                + " NATIONALITY_CD, CREATED_AT, CREATED_BY)"
+                + " VALUES ('인물', 'v1:seed', :hash, DATE '1988-05-05', 'F', 'KR',"
+                + " SYS_EXTRACT_UTC(SYSTIMESTAMP) - NUMTODSINTERVAL(:days, 'DAY'), 'BATCH-TEST')")
+        .param("hash", hash)
+        .param("days", daysAgo)
+        .update();
+    return jdbcClient
+        .sql("SELECT PERSON_ID FROM TB_PERSON WHERE RRN_HASH = :hash")
+        .param("hash", hash)
+        .query(Long.class)
+        .single();
+  }
+
+  protected void seedAddress(long personId) {
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_PERSON_ADDR (PERSON_ID, ADDR_TYPE_CD, ADDR_ENC, VALID_FROM_DT,"
+                + " CREATED_BY) VALUES (:p, 'HOME', 'v1:addr', DATE '2020-01-01', 'BATCH-TEST')")
+        .param("p", personId)
+        .update();
+  }
+
+  protected long seedResignedEmp(long personId, long orgId, LocalDate resignDt) {
+    String empNo = "E" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_EMP (PERSON_ID, EMP_NO, EMP_TYPE_CD, ORG_ID, HIRE_DT, RESIGN_DT,"
+                + " EMP_STATUS_CD, CREATED_BY)"
+                + " VALUES (:pid, :no, 'REGULAR', :org, DATE '2015-01-01', :resign, 'RESIGNED',"
+                + " 'BATCH-TEST')")
+        .param("pid", personId)
+        .param("no", empNo)
+        .param("org", orgId)
+        .param("resign", resignDt)
+        .update();
+    return jdbcClient
+        .sql("SELECT EMP_ID FROM TB_EMP WHERE EMP_NO = :no")
+        .param("no", empNo)
+        .query(Long.class)
+        .single();
+  }
+
+  protected long seedTerminatedAgent(long personId, long orgId, LocalDate terminateDt) {
+    String cd = "A" + uniq();
+    jdbcClient
+        .sql(
+            "INSERT INTO TB_AGENT (PERSON_ID, AGENT_CD, CHANNEL_CD, ORG_ID, AGENT_STATUS_CD,"
+                + " FIRST_APPOINT_DT, LAST_APPOINT_DT, TERMINATE_DT, RECRUIT_ELIG_YN, CREATED_BY)"
+                + " VALUES (:pid, :cd, 'FC', :org, 'TERMINATED', DATE '2015-01-01',"
+                + " DATE '2015-01-01', :term, 'N', 'BATCH-TEST')")
+        .param("pid", personId)
+        .param("cd", cd)
+        .param("org", orgId)
+        .param("term", terminateDt)
+        .update();
+    return jdbcClient
+        .sql("SELECT AGENT_ID FROM TB_AGENT WHERE AGENT_CD = :cd")
+        .param("cd", cd)
+        .query(Long.class)
+        .single();
+  }
+
+  protected boolean personAnonymized(long personId) {
+    Integer flag =
+        jdbcClient
+            .sql(
+                "SELECT CASE WHEN RRN_HASH IS NULL THEN 1 ELSE 0 END"
+                    + " FROM TB_PERSON WHERE PERSON_ID = :id")
+            .param("id", personId)
+            .query(Integer.class)
+            .single();
+    return flag != null && flag == 1;
+  }
+
+  protected int purgeLedgerCount(long personId) {
+    return jdbcClient
+        .sql("SELECT COUNT(*) FROM TB_PRIVACY_PURGE_LEDGER WHERE PERSON_ID = :id")
+        .param("id", personId)
+        .query(Integer.class)
+        .single();
+  }
+
+  protected String purgeLedgerType(long personId) {
+    return jdbcClient
+        .sql("SELECT PURGE_TYPE_CD FROM TB_PRIVACY_PURGE_LEDGER WHERE PERSON_ID = :id")
+        .param("id", personId)
+        .query(String.class)
+        .single();
+  }
+
+  protected int personAddrCount(long personId) {
+    return jdbcClient
+        .sql("SELECT COUNT(*) FROM TB_PERSON_ADDR WHERE PERSON_ID = :id")
+        .param("id", personId)
+        .query(Integer.class)
         .single();
   }
 }

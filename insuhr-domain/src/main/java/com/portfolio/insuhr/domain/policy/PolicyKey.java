@@ -20,6 +20,8 @@ public enum PolicyKey {
   REG_EDU_REUSE_ON_REAPPOINT,
   /** 개인정보 보존기간(년) */
   PRIVACY_RETENTION_YEARS,
+  /** 역할 미생성(무역할) 인물 파기 유예(일). 설계서 5.2 v1.4 / 8 Phase 8 */
+  ORPHAN_PERSON_PURGE_DAYS,
 
   /** Pull 커서 워터마크 지연(초). 설계서 9.4 v1.6 기본값 5 — 시퀀스 갭 함정 방지 */
   SYNC_WATERMARK_SECONDS,

@@ -1,5 +1,6 @@
 package com.portfolio.insuhr.domain.agent;
 
+import com.portfolio.insuhr.common.crypto.AesGcmCipher;
 import com.portfolio.insuhr.domain.support.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -130,6 +131,14 @@ public class AgentContract extends BaseEntity {
 
   public String getAccountHolderNm() {
     return accountHolderNm;
+  }
+
+  /**
+   * 지급계좌 복호화 (설계서 7.2 Phase 8). {@code Person.decryptRrn}과 같은 계약 — <b>직접 부르지 말 것</b>: {@code
+   * agent.account.decrypt} 권한 검사 + 접근로그 기록은 애플리케이션 서비스의 책임이다(도메인은 보안 컨텍스트를 모른다).
+   */
+  public String decryptAccount(AesGcmCipher cipher) {
+    return cipher.decrypt(accountEnc);
   }
 
   public LocalDate getValidFromDt() {
