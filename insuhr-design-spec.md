@@ -1,7 +1,7 @@
 # InsuHR — 보험사 통합 인사관리시스템 설계서
 
 > **문서 목적**: Claude Code에서 이 문서만으로 시스템을 단계적으로 구현할 수 있도록 작성한 구현용 설계서 (포트폴리오 프로젝트)
-> **버전**: 2.1 / 작성일: 2026-07-17 / 최종 개정: 2026-07-18 ([개정 이력](#개정-이력))
+> **버전**: 2.2 / 작성일: 2026-07-17 / 최종 개정: 2026-07-18 ([개정 이력](#개정-이력))
 > **기술 스택**: Java 21 LTS · Spring Boot 4.1.0 · Oracle Database 23ai
 
 ---
@@ -204,6 +204,8 @@ Boot 4.1은 Spring Batch **6.0.x**를 끌어온다(Boot 3은 Batch 5.x). Securit
 | 잡 파라미터 지연바인딩 | `@Value("#{jobParameters['x']}")` | Batch 6에선 **`null`로 떨어진다**(원인 미상, `#{stepExecution}` 주입은 정상). `@Value("#{stepExecution}") StepExecution`을 받아 `stepExecution.getJobParameters().getString("x")`로 읽는다 |
 | 인크리멘터 + 업무 파라미터 | `.incrementer(new RunIdIncrementer())` 로 매일 재실행 | 잡에 인크리멘터가 있으면 `JobOperator.start(job, params)`가 **업무 파라미터를 버린다**(로그 "Additional parameters will be ignored", 인크리멘터 값만 남음). 업무 파라미터(`targetDate`)를 쓰는 잡은 **인크리멘터를 달지 않고** 호출자가 유니크 `run.id`를 함께 넘겨 재실행한다(8장 v2.0) |
 | `ObjectMapper` 빈 | web 스타터가 딸려옴 | 배치는 web이 없어 Jackson 자동설정 모듈이 빠졌다 → `tools.jackson.databind.ObjectMapper` 빈 부재로 `OutboxIntegrationRecorder`(domain) 배선 실패. 필요가 시작되는 **domain이 `spring-boot-jackson`을 `api`로** 물어 모든 실행 모듈에 빈을 공급한다(구조로 강제, jpa-common.yml과 같은 원칙) |
+
+**Spring Kafka 4 / Boot 4 (v2.2 — Phase 8에서 실측)** — Security 7·Jackson 3·Batch 6에 이어 **네 번째** 메이저 상승. Boot 4.1 BOM이 관리하는 버전: `spring-kafka 4.1.0`, `kafka-clients 4.2.1`(Boot 3의 Spring Kafka 3.x에서 오름), 테스트는 `testcontainers-kafka 2.0.5`(프로젝트 Testcontainers와 동일). 함정 하나: Boot 자동설정의 기본 `KafkaTemplate`은 `<Object, Object>`라 `KafkaTemplate<String, String>` 주입점과 제네릭이 안 맞는다 → String 직렬화 `ProducerFactory`/`KafkaTemplate`을 `@Profile("kafka")` 설정에서 직접 정의한다(`KafkaRelayConfig`). Kafka는 `kafka` 프로파일에서만 활성이라 기본(webhook) 빌드·테스트는 Kafka 없이 그대로 그린이다.
 
 ### 3.1 로컬 개발 환경 (docker-compose)
 
@@ -766,7 +768,7 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 |---|---|---|
 | 유효기간형 | 조직, 위촉계약, 주소 | `VALID_FROM_DT ~ VALID_TO_DT` 컬럼. 현재행 = TO가 9999-12-31 |
 | 이벤트형 | 발령, 위촉상태 전이, 협회 등록/말소 | 사건 1건 = 1행 append-only, 수정 대신 취소행 추가 |
-| 감사형 | PERSON, AGENT, EMP 등 마스터 | Application 계층 AOP로 before/after JSON을 `TB_AUDIT_LOG`에 기록 (트리거 미사용 — 테스트 용이성) |
+| 감사형 | PERSON, AGENT, EMP 등 마스터 | **미구현 백로그**(v2.2) — Application 계층 AOP로 before/after 전체 스냅샷 JSON을 `TB_AUDIT_LOG`에 기록하려던 것이나 어느 Phase 완료 기준에도 걸리지 않았다. §12 시나리오가 다른 통제(접근로그·이력 테이블·Outbox)로 이미 커버되기 때문. 구현 시 조건은 §10.4 참조 |
 
 **이력 행은 항상 변경 후 전체 스냅샷을 담는다 (v1.2 확정 — Phase 2 전제)**
 
@@ -791,10 +793,12 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | TB_PERSON.RRN_ENC | AES-256-GCM (앱 레벨), 키는 환경변수/KMS | `agent.rrn.decrypt` 권한자만 복호화 API, 접근로그 필수 |
 | TB_PERSON.RRN_HASH | SHA-256 + pepper | 동일인 검사, 완전일치 검색 |
 | TB_PERSON.MOBILE_ENC / TB_PERSON_ADDR.ADDR_ENC | AES-256-GCM | 기본 마스킹 표시 (010-****-1234) |
-| TB_AGENT_CONTRACT.ACCOUNT_ENC | AES-256-GCM | 수수료시스템 연계 시에만 복호화 |
+| TB_AGENT_CONTRACT.ACCOUNT_ENC | AES-256-GCM | `agent.account.decrypt` 권한자만 복호화 API(POST + 사유 + 접근로그, Phase 8). **마스킹 컬럼 없음** — 목록 노출 필드가 아니므로(§10.2 경계) |
 | TB_IF_SUBSCRIBER.SECRET_ENC | AES-256-GCM | 릴레이 서명용 |
 
 운영 환경에서는 Oracle TDE(테이블스페이스 암호화)를 병행한다고 가정하되, 애플리케이션 레벨 암호화가 1차 통제.
+
+**RRN 컬럼의 NOT NULL 완화는 파기 산출물로서만 정당하다 (v2.2, §6.4·§8 Phase 8).** `privacyPurgeJob`의 익명화가 `RRN_ENC`·`RRN_HASH`를 NULL로 치환하려면 V7의 NOT NULL을 풀어야 해서 V16이 `MODIFY (RRN_ENC NULL, RRN_HASH NULL)`한다. 그 대신 "신규 인물은 RRN 필수"라는 불변식을 **스키마가 아니라 `Person.register` 코드**가 진다 — 스키마가 느슨해진 자리를 코드 불변식이 이어받는다. 해시까지 지우는 이유: 해시를 남기면 파기된 인물이 재등록 시 부활한다(파기 의미와 모순). Oracle의 단일컬럼 UNIQUE 인덱스는 전체 NULL 행을 색인하지 않으므로 `UQ_PERSON_RRN(RRN_HASH)`이 다중 파기 인물을 허용한다.
 
 ---
 
@@ -1154,7 +1158,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 목록 응답의 마스킹 값(`010-****-1234`)을 만들려고 암호문을 복호화하면 **목록 20건 = 복호화 20회**가 매 페이지마다 발생한다. 마스킹은 원문이 필요 없는 표시 문자열이므로, 쓰기 시점에 계산해 별도 평문 컬럼(`*_MASKED`)에 저장하고 목록은 그 컬럼만 읽는다.
 
-- 대상: `TB_PERSON.MOBILE_MASKED`(+`PERSON_NM`은 원래 평문), `TB_AGENT_CONTRACT.ACCOUNT_MASKED`(Phase 5) 등 목록에 노출되는 암호화 컬럼 전부.
+- **대상 경계 (v2.2): 마스킹 컬럼은 "목록에 노출되는" 암호화 필드에만 둔다.** `TB_PERSON.MOBILE_MASKED`(+`PERSON_NM`은 원래 평문)가 그 예다. **지급계좌는 마스킹 컬럼을 두지 않는다** — `TB_AGENT_CONTRACT`엔 `ACCOUNT_ENC`만 있고 계좌는 목록에 안 나오며 복호화 엔드포인트로만 열리므로, 패턴의 근거(목록 N건×복호화 N회 회피)가 없는 곳에 대칭성만으로 컬럼을 만드는 건 낭비다. 복호화 응답이 원문과 함께 즉석 마스킹을 준다(§7.2 계좌 복호화 백로그). 향후 계약 상세 목록에 계좌를 표시할 경로가 실제로 생기면 그때 컬럼+백필은 한 세션 일이다. (설계서 원본의 `ACCOUNT_MASKED(Phase 5)` 표기는 구현되지 않았고 이 경계 결정으로 정정한다.)
 - 원문 변경 시 마스킹 컬럼도 함께 갱신해야 한다 — 엔티티의 setter가 두 값을 한 번에 바꾸도록 강제한다(따로 두면 어긋난다).
 - 마스킹 컬럼은 개인정보가 아니므로 파기 대상에서 제외되지 않는다 — `privacyPurgeJob`(8장)은 이 컬럼도 함께 지운다.
 
@@ -1165,7 +1169,9 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 ### 10.4 감사
 
-- 모든 쓰기 API: AOP가 before/after를 `TB_AUDIT_LOG`에 JSON으로 기록.
+- **변경감사(`TB_AUDIT_LOG` AOP)는 미구현 백로그다 (v2.2).** 여덟 Phase 어느 완료 기준에도 오르지 않았고, 이력이 이벤트형·유효기간형으로 이미 촘촘해 변경감사 AOP는 세 번째 겹이다 — 우선순위에서 밀려 v1.0에 넣지 않는다. Phase 0의 교훈대로 **CLAUDE.md의 "감사는 AOP" 규칙은 삭제**했다(미구현 규칙이 규칙 파일에 남으면 다음 세션이 "복원"하려 든다).
+  - **구현 시 설계 조건 (파기 정합성 전제)**: 스냅샷 JSON은 전체 상태(6.6)라 `Person`을 그대로 직렬화하면 `RRN_ENC`·`RRN_HASH`·`MOBILE_ENC` 암호문이 `AFTER_JSON`에 실린다. 암호문도 "키가 살아있는 한 복원 가능한 사본"이라 `privacyPurgeJob`의 파기 원칙과 충돌한다. 그러므로 **AOP가 `TB_PERSON`의 민감 필드를 감사 JSON에서 처음부터 제외**해야 한다(파기 시 감사행 스크럽보다 소스 제외가 깔끔). 이 결정 덕에 파기 잡은 감사행을 스크럽할 필요가 없다.
+- 개인정보 열람/복호화: `TB_PRIVACY_ACCESS_LOG`에 사유·행위자·시각을 같은 트랜잭션으로 기록(10.2, 구현됨).
 - 모든 요청: traceId(MDC) 로깅, 응답에 포함.
 
 ---
@@ -1311,8 +1317,9 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 - `futureAppointApplyJob`은 **Phase 3의 `AppointmentApplyService`를 감싸기만 한다** (5.5) — 반영 규칙을 배치에 다시 구현하면 온라인 확정 경로와 배치 경로가 갈라진다
 - **진행 상태 (v2.1 — 완료):** §8 로스터 잡 전부(9잡) + V14·V15 그린. 1차(v2.0) 3잡(`eligibilityRefreshJob`·`futureAppointApplyJob`·`hrSnapshotFileJob`) + 후속(v2.1) 6잡(`guaranteeExpiry`·`continuingEduNotice`·`licenseValidity`·`dataQuality`·`annualLeaveGrant`·`outboxDlqSweep`) — 완료 기준 4항 + 후속 기준(V15 + 6잡 + **각 잡 dedup 키 재실행 멱등 테스트** + **알림 조건부 발행** `notice.created`) 전부 통과, 전체 빌드 161개 그린. 구현 결정은 §8 "Phase 7 후속 구현 완료" 참조. **`phase-7` 태그 조건 충족.** (`privacyPurgeJob`은 익명화·`person.anonymized`로 Phase 8, 아래.)
 
-**Phase 8 — 마감**
-- privacyPurgeJob, Kafka 발행(relay `EventPublisher` kafka 프로파일), 계좌 복호화 엔드포인트(§7.2 백로그), OpenAPI 문서 정리, README(아키텍처 다이어그램, 실행법, 시나리오 데모 스크립트), 부하 스모크(선택)
+**Phase 8 — 마감 (v2.2 완료, v1.0 릴리스)**
+- **완료**: `privacyPurgeJob`(두 대상군 익명화 + 파기 대장 V16 + `person.purged`), Kafka(relay `EventPublisher` 포트 추출 → `KafkaPublisher` `kafka` 프로파일 + 팬아웃 타입무관 + key=aggType:aggId), 계좌 복호화(V17 권한 + POST+사유+접근로그, 원문+즉석 마스킹), README(아키텍처·개정이력 서사·10분 데모) + 부록 B curl 데모(`demo/`). **전체 168개 그린, `@Disabled` 0.**
+- **변경감사 AOP(`TB_AUDIT_LOG`)는 미구현 백로그로 강등**(§10.4) — 우선순위에서 밀렸고, CLAUDE.md의 "감사는 AOP" 규칙은 삭제(복원 방지). "감사 스크럽"은 스크럽할 대상이 없어 완료 기준에서 빠진다.
 - `privacyPurgeJob`의 대상은 **두 종류**다 — 보존기간 경과 인물 + **역할 없는 인물**(8장, 5.2 v1.4). 후자는 REQUIRES_NEW 결정에서 파생된 것이라 놓치기 쉽다
 - **`dataQualityJob`은 Phase 8이 아니라 Phase 7 후속으로 편입**(v2.0) — 출력처 `TB_DQ_FINDING`이 V15에서 생기므로 나머지 배치 잡과 함께 묶는다
 
@@ -1373,6 +1380,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
+| 2.2 | 2026-07-18 | **Phase 8 완료 — 개인정보 파기 · Kafka · 계좌 복호화 · 데모(v1.0 릴리스)** — ① **파기 자격 = 모든 역할 종료**(8, 5.2): 이중 역할(직원+설계사) 가능하므로 `max(퇴직,해촉)+보존기간` 경과 AND 둘 다 종료여야 파기 — 한 역할만 보고 지우면 재직자 주민번호가 날아간다. 둘째 대상군 = 무역할 인물(`ORPHAN_PERSON_PURGE_DAYS`) ② **익명화는 RRN 해시까지 지운다**(8, 6.8): 해시를 남기면 재등록 시 부활 → 파기 모순. V16이 `TB_PERSON` RRN NOT NULL을 풀고(파기 산출물 전제), "신규 인물 RRN 필수" 불변식은 `Person.register` 코드가 진다. Oracle UNIQUE 인덱스가 전체 NULL 미색인이라 다중 파기 허용 ③ **`person.purged` 발행**(8): 다운스트림 사본도 지우게 파기를 전파(업무키만, 민감정보 부재). 스냅샷이 이미 익명화돼 ChangeLog 보존 안전(Phase 6 배당금). 파기 대장 `TB_PRIVACY_PURGE_LEDGER`(V16)가 §6.3 누락 보강 ④ **변경감사 AOP 미구현 확정**(6.6·10.4): `TB_AUDIT_LOG` AOP는 어느 Phase에도 안 걸린 백로그 — 우선순위상 v1.0 제외, **CLAUDE.md 규칙 삭제**(복원 방지). 구현 시 조건(`TB_PERSON` 민감필드 소스 제외)을 §10.4에 상속 ⑤ **계좌 마스킹 경계**(6.8·10.2): 마스킹 컬럼은 목록 노출 필드에만 — 계좌는 목록에 없어 `ACCOUNT_MASKED` 두지 않음(원본 표기 정정), 복호화 응답이 원문+즉석 마스킹. 권한 `agent.account.decrypt`(V17), POST+사유+접근로그 ⑥ **Kafka(네 번째 메이저)**(3.0·8): `spring-kafka 4.1.0`/`kafka-clients 4.2.1`. `EventPublisher` 포트 추출을 **무행동 변경 커밋으로 분리**(순서 게이트 회귀 귀속), `KafkaPublisher`(`@Profile("kafka")`, key=aggType:aggId=웹훅 게이트와 같은 순서), 팬아웃 `IN ('WEBHOOK','KAFKA')`로 타입무관, 미지원 타입 전달은 FAILED(정체 오탐·SKIPPED 사장 회피, 프로파일 활성 후 재전송 회복) ⑦ 데모: `demo/`(seed·부록B curl·로컬 수신) + README(개정이력 서사). 전체 **168개 그린, `@Disabled` 0**, **`phase-8` 태그 = v1.0** |
 | 2.1 | 2026-07-18 | **Phase 7 후속 완료 — V15 + 남은 6잡** — ① **V15 출력 테이블**(8, V15): `TB_NOTICE_QUEUE`(`UQ(NOTICE_TYPE,TARGET_ID,DUE_DT,MILESTONE)`) + `TB_DQ_FINDING`(`UQ(RULE_CD,TARGET_ID,FOUND_DT)`) — 멱등이 유니크 키에서 나온다. `NoticeQueueDao`/`DqFindingDao`는 팬아웃의 `INSERT…SELECT…WHERE NOT EXISTS` 단문을 재사용(rollback-only 함정 회피, UQ는 백스톱) ② **`guaranteeExpiryJob` 순서 무관 확인**(8): 모집자격 판정이 `STATUS_CD`가 아니라 `FinGuarantee.isActiveOn`의 기간 술어(`END_DT>=asOf`)를 보므로, 물질화 경계(`END_DT<targetDate`)가 판정과 대칭 — `eligibilityRefreshJob`과 순서 무관, 하루 죽어도 refresh가 모집 통제 보장. 물질화는 도메인 `GuaranteeExpiryService`가 **온라인과 같은 규약**(엔티티 변경→`reconcileAsOf`)으로 소유 → "만료 시 재판정 트리거"가 별도 코드 없이 성립 ③ **알림 마일스톤 부등식**(8): `DUE_DT<=targetDate+M`(등식 아님)이라 다운타임 뒤 놓친 마일스톤이 늦게라도 발화, dedup이 중복 차단. 조건부 `notice.created`(행 생성 시에만) ④ **`annualLeaveGrantJob` 회계연도 일괄로 택일**(8): 입사기념일 개별 기산 병기를 정리, 부여일수는 근속 정책값(`ANNUAL_LEAVE_*`, V15 시드), 멱등=`UQ_LEAVE_GRANT` ⑤ **licenseValidity↔dataQuality 경계**(8): 잡은 둘로 유지하되 "룰→FINDING" 골격(`DqRule`/`DqFindingDao`/`DqSweepTasklet`) 공유. licenseValidity=살아있는 설계사의 자격 상태 모순(REVOKED 자격·DEREGISTERED 협회), dataQuality=구조적 결손(폐지 조직 재직자·협회 전무). DQ 잡은 관측만(이벤트 없음) ⑥ **`outboxDlqSweepJob` 관측만**(8): FAILED 집계 + 정체 탐지를 `TB_DQ_FINDING`에, 재전송 없음 — 알림(행동 촉구) vs 발견(운영) 용도 구분 확정 ⑦ 전체 빌드 **161개 그린**(154→+7 잡별 멱등/조건부 발행 테스트), **`phase-7` 태그 부여** |
 | 2.0 | 2026-07-18 | **Phase 6 클로즈아웃 2건 + Phase 7 진입 결정** — ① **릴레이 픽업은 락 없는 `SELECT`, `FOR UPDATE SKIP LOCKED` 미사용**(9.2): 단일 인스턴스 가정 하 잠금 불필요, 실수로 2번째 인스턴스가 뜨면 중복 전송(eventUuid 멱등 흡수)·순서 위반 가능성이라는 **문서화된 트레이드오프**로 명시(침묵한 이탈 아님), 스케일아웃은 aggId 파티셔닝 전제 ② **ORA-18716 회피 설정을 구조로 강제**(3.0): 세 application.yml에 복제돼 드리프트로 돌아올 형태였다(1.9 버그가 그 증거) → domain에 `jpa-common.yml`을 두고 api·batch·relay가 `spring.config.import`로 끌어와 "JPA 전 모듈 공통"을 문서가 아니라 구조로 만든다 ③ **Spring Batch 6 / Boot 4 이행 실측**(3.0): 메이저 3연속(Security 7·Jackson 3·Batch 6). 메타 스키마 자동생성 제거(→Flyway V14 소유), `@EnableBatchProcessing` 붙이면 autoconfig backoff(붙이지 않음), 빌더 팩토리 제거(`new JobBuilder/StepBuilder`), `item`/`repeat`→`batch.infrastructure.*` 재배치, 잡 파라미터는 비옵션 인자 ④ **배치 메타테이블 Flyway 소유 V14**(8): `schema-oracle.sql`을 V14로 편입 ⑤ **잡 파라미터 규약**(8): `targetDate`(비옵션 식별 파라미터)를 `asOf`로 도메인에 주입(잡은 시스템 날짜 안 읽음) — 앵커 Clock이 배치까지 관통, 멱등성 = "같은 targetDate 2회=같은 결과". 재실행은 호출자 지정 유니크 `run.id`로 허용하며 **`RunIdIncrementer`는 쓰지 않는다**(Batch 6에서 인크리멘터가 있으면 `start`가 업무 파라미터를 버림 — 3.0/8 실측 정정) ⑥ **`eligibilityRefreshJob` 역할 재정의**(8): 실시간 reconcile이 서 있으니 이 잡은 스냅샷 갱신기가 아니라 **쓰기 없이 날짜 경계가 넘어가는 전이(보수교육 도과·보증 만료)의 유일한 포착자** — Reader는 ID만 페이징, Processor가 기존 reconciler 호출, REQUIRED로 청크 트랜잭션 합류. 시나리오 2 완결 ⑦ **`outboxRetryJob`→`outboxDlqSweepJob` 재정의**(8): 백오프 재시도는 릴레이가 `NEXT_RETRY_AT`로 소유하므로 잡은 재전송하지 않고 **정체 감시(한도 소진 FAILED 집계·오래 머문 상태 탐지)만** — 이중 전송 경합 방지 ⑧ **`privacyPurgeJob`(Phase 8) 대상·이벤트 확정**(8): 보존기간 경과 + 역할 없는 인물 두 종류, 익명화는 `person.anonymized` 발행(업무키만, 민감정보 부재 규칙 준수) ⑨ **Phase 7 구현 실측 — Batch 6 런타임 API**(3.0): Reader/Writer 무인자 생성자 제거(빌더 우선), `.chunk(int,tx)` deprecated→`.chunk(int).transactionManager()`+`.skipListener()`, `@Value("#{jobParameters['x']}")` 지연바인딩 `null`→`#{stepExecution}`로 읽기, 인크리멘터+업무 파라미터 비호환 ⑩ **크립토/Jackson도 구조로 강제**(3.0): 세 yml에 복제된 `insuhr.crypto`를 domain의 `crypto-common.yml`로 모아 import(jpa-common.yml과 같은 원칙), `OutboxIntegrationRecorder`가 요구하는 `ObjectMapper` 빈은 domain이 `spring-boot-jackson`을 `api`로 물어 web 없는 batch에도 공급. Phase 7 잡 3종(eligibilityRefresh·futureAppointApply·hrSnapshotFile) + 테스트 그린(154개), 시나리오 2·6b·멱등·스냅샷 체크섬 통과 ⑪ **restart 미사용 명시**(8): 매 실행이 새 JobInstance라 실패 인스턴스 restart 의미론을 의도적으로 안 쓴다 — 재계산 멱등(5.5)이 안전의 전제 ⑫ **§6.3 누락 보강 + V15 설계**(8): §8이 참조하던 "알림 대기 테이블"이 6.3 목록에 없던 누락을 정정 — 범용 `TB_NOTICE_QUEUE`(`UQ(NOTICE_TYPE,TARGET_ID,DUE_DT,MILESTONE)`로 멱등)·`TB_DQ_FINDING` 2종으로 채우고 `INSERT…WHERE NOT EXISTS`+조건부 `notice.created` 발행(futureAppoint 패턴 재사용). `dataQualityJob`을 Phase 8→Phase 7 후속으로 이동, Phase 8은 privacyPurge+Kafka+계좌복호화+마감으로 정리. **`phase-7` 태그는 남은 6잡(V15 선행)까지 보류** |
 | 1.9 | 2026-07-18 | **Phase 6 구현 완료 반영** — ① **연계 엔드포인트 권한 분리**(7.2): `/sync/*`는 외부 시스템 계정(`sync.read`/`sync.export`, SYSTEM), `/admin/subscribers`·`/admin/outbox/resend`는 연계 운영자(`integration.admin`, IT_ADMIN). 데이터 수신 주체와 연계 관리 주체가 달라 권한을 나눈다(V13 시드) ② **relay 2단계 폴러 구현 실증**(9.2): 팬아웃(JdbcClient `INSERT..SELECT..WHERE NOT EXISTS`, `READY→FANNED_OUT`/대상없음 `SENT`) + 전달(순서 게이트 (구독자,aggId), 종결집합 {SENT,SKIPPED}, HMAC 서명 `timestamp+"."+body`, 백오프 `NEXT_RETRY_AT` 영속). WireMock 시나리오 5 / 동일 aggId 순서 / 구독자 격리+비활성 SKIPPED 수렴 그린 ③ **ORA-18716 회피 설정은 JPA 전 모듈 공통**(3.0): `preferred_instant_jdbc_type=TIMESTAMP`+`jdbc.time_zone=UTC`가 api뿐 아니라 batch·relay에도 필요 — 누락 시 감사컬럼 Instant 읽기에서 실패(릴레이 테스트로 실증, batch도 선반영). 테스트 150개 그린 |

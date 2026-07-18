@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~7 완료** (2026-07-18). `./gradlew build` 그린, 테스트 161개(`@Disabled` 0). 마이그레이션 V1~V15.
+**Phase 0~8 완료 (v1.0 릴리스)** (2026-07-18). `./gradlew build` 그린, 테스트 168개(`@Disabled` 0). 마이그레이션 V1~V17.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
@@ -21,13 +21,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Phase 7 후속(6잡 + V15, `phase-7` 태그): **V15** = 범용 `TB_NOTICE_QUEUE`(`UQ(NOTICE_TYPE,TARGET_ID,DUE_DT,MILESTONE)`)·`TB_DQ_FINDING`(`UQ(RULE_CD,TARGET_ID,FOUND_DT)`) — 멱등이 유니크 키에서 나온다(§6.3 "알림 대기 테이블" 누락 보강). `NoticeQueueDao`/`DqFindingDao`가 팬아웃의 `INSERT…WHERE NOT EXISTS` 단문 재사용. **6잡**: `guaranteeExpiryJob`(로스터에서 상태를 직접 바꾸는 유일한 잡 — D-30 알림 + `END_DT<targetDate` EXPIRED 물질화를 도메인 `GuaranteeExpiryService`가 **온라인 `AgentCredentialService`와 같은 규약**으로 소유→reconcile 유발; 판정은 `STATUS_CD`가 아니라 `FinGuarantee.isActiveOn` 기간 술어(`END_DT>=asOf`)를 봐서 `eligibilityRefreshJob`과 **순서 무관**), `continuingEduNoticeJob`(D-60/30/7, **부등식** `DUE_DT<=targetDate+M`+dedup으로 다운타임 뒤 늦은 발화, **행 생성 시에만** `notice.created`), `licenseValidityJob`(살아있는 설계사의 자격 상태 모순=REVOKED 자격·DEREGISTERED 협회), `dataQualityJob`(구조적 결손=폐지 조직 `USE_YN='N'` 재직자·협회 전무 설계사), `annualLeaveGrantJob`(연차=회계연도 일괄로 택일, 근속 정책값 `ANNUAL_LEAVE_*`, `UQ_LEAVE_GRANT` 멱등), `outboxDlqSweepJob`(**관측만** — FAILED·정체를 `TB_DQ_FINDING`에 적재, 재전송 없음). licenseValidity·dataQuality·outboxDlqSweep은 "룰→FINDING" 골격(`DqRule`/`DqFindingDao`/`DqSweepTasklet`)을 **잡은 합치지 않고** 공유(경계는 §8). 잡별 dedup 재실행 멱등 + 알림 조건부 발행 테스트 그린
 
-Phase 8에서 갚아야 할 것:
-- **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4). 익명화는 `person.anonymized` 발행(§8 v2.0)
-- **Phase 8 Kafka 발행** — relay의 `EventPublisher` 포트에 kafka 프로파일 구현 추가(설계서 v1.6에서 Phase 8로 미룸). 계좌 복호화 엔드포인트(§7.2 백로그)도 여기
+- Phase 8 (마감, `phase-8` 태그 = **v1.0 릴리스**): **`privacyPurgeJob`**(로스터에서 유일하게 지우는 잡) — 두 대상군을 하나의 `UNION` Reader로: ①**모든 역할 종료**(이중 역할 가능하므로 직원·설계사 둘 다 종료 + `max(퇴직,해촉)+보존기간` 경과 — 한 역할만 보고 지우면 재직자 주민번호가 날아간다) ②무역할 인물(`ORPHAN_PERSON_PURGE_DAYS`). 익명화는 `Person.anonymize()`가 암호화 컬럼 + **RRN 해시**를 NULL(해시 남기면 재등록 부활 → 파기 모순; V16이 NOT NULL 완화, 신규 RRN 필수는 `Person.register` 코드 불변식) + 주소 삭제 + 대장 `TB_PRIVACY_PURGE_LEDGER`(V16) + **`person.purged`** 발행(업무키만). 재실행 멱등 = `RRN_HASH IS NOT NULL` 술어. **Kafka**: `EventPublisher` 포트 추출(무행동 변경 커밋 분리) → `KafkaPublisher`(`@Profile("kafka")`, key=aggType:aggId=웹훅 순서 게이트와 같은 보장), 팬아웃 `IN ('WEBHOOK','KAFKA')`로 타입무관, 미지원 타입=FAILED(회복 가능). spring-kafka 4.1(**네 번째 메이저**, §3.0). **계좌 복호화**: `POST /agents/{id}/account`(V17 권한 `agent.account.decrypt`, 사유+접근로그 같은 트랜잭션, 원문+즉석 마스킹; 목록 노출 아니라 `ACCOUNT_MASKED` 컬럼 없음 — §10.2 경계). 데모 `demo/`(seed·부록B curl·로컬 수신) + README. **변경감사 AOP는 미구현 백로그로 확정**(§10.4, 규칙 삭제)
 
 ## 단일 사양(SSOT)
 
-`insuhr-design-spec.md`(현재 **v2.1**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
+`insuhr-design-spec.md`(현재 **v2.2**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
 설계서와 다르게 구현해야 할 이유가 있으면 임의로 벗어나지 말고 사용자에게 먼저 알린다.
 
 **설계서가 현실과 어긋나는 것을 발견하면 CLAUDE.md나 코드 주석에만 우회 기록을 남기지 말고 설계서 본문을 개정하고 말미의 개정 이력에 남긴다.** 그렇게 하지 않으면 다음 세션이 "설계서 우선" 규칙을 근거로 정정을 되돌린다. 이 파일에는 결론만 두고 근거·상세는 설계서에 둔다.
@@ -111,7 +109,7 @@ Controller → Application Service(`@Transactional`, 유스케이스 단위) →
 - **명명**: 테이블 `TB_{도메인}_{명사}`, PK는 `GENERATED AS IDENTITY` 단일 대리키, 업무키는 별도 UNIQUE. 컬럼 접미사 `_CD`(코드) `_YN`(CHAR(1)) `_DT`(DATE) `_AT`(TIMESTAMP) `_AMT` `_ENC`(암호문) `_HASH`.
 - **에러코드**: `{도메인3자}-{HTTP류}{일련2자}` — COM/ORG/PER/EMP/AGT/LIC/EDU/GRT/SNC/IFC/AUT.
 - **행 수준 접근 통제**: BRANCH_MANAGER·SUPPORT_STAFF는 본인 소속 조직 트리 하위만 조회 가능 — 공통 `OrgScopeFilter`가 쿼리에 조직 ID 목록을 강제 주입한다.
-- 감사 이력은 DB 트리거가 아니라 Application AOP로 남긴다(테스트 용이성).
+- **변경감사 AOP(`TB_AUDIT_LOG`)는 규칙이 아니라 미구현 백로그다** — 설계서 §10.4로 강등(v2.2). 개인정보 열람/복호화 감사는 `TB_PRIVACY_ACCESS_LOG`가 별도로 진다(구현됨). 구현할 거면 §10.4의 조건(`TB_PERSON` 민감필드 소스 제외)을 먼저 읽을 것.
 - 커밋: Conventional Commits (feat/fix/test/refactor/docs/chore).
 
 ## 테스트
