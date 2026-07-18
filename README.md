@@ -1,121 +1,96 @@
-# InsuHR — 보험사 인사/설계사 관리 시스템 (포트폴리오)
+# InsuHR — 보험사 통합 인사관리시스템
 
-보험사의 **임직원·설계사(FC) 생애주기**와 **대외 연계**를 다루는 백엔드. 설계사 위촉 상태머신, 모집자격 판정,
-개인정보 통제, Transactional Outbox 기반 3계층 동기화를 실제 Oracle 위에서 구현했다.
+임직원과 설계사(FC)를 **하나의 인물 모델** 위에서 통합 관리하고, 인사 기준정보의 변경을 **이벤트 · Pull API · 배치 파일 3계층**으로 타 시스템에 동기화하는 백엔드 시스템입니다. 설계서를 먼저 쓰고, 구현 과정의 실증으로 설계서를 교정해 가며(v1.0 → v2.2) 완성한 포트폴리오 프로젝트입니다.
 
-> **이 저장소의 핵심은 코드만큼이나 [`insuhr-design-spec.md`](./insuhr-design-spec.md)와 그 [개정 이력](./insuhr-design-spec.md#개정-이력)이다.**
-> 단일 설계서를 먼저 세우고, 각 Phase 구현이 설계의 허점을 실증으로 드러낼 때마다 **설계서를 개정**하며 나아갔다
-> (예: 제약 위반의 rollback-only 오염 → REQUIRES_NEW, 인크리멘터가 배치 파라미터를 버리는 Boot4 실측,
-> 파기 시 RRN 해시까지 지워야 재등록 부활을 막는다는 정정). 개정 이력 자체가 "설계 결정이 왜 그렇게 됐는지"의 기록이다.
+`Java 21 LTS` · `Spring Boot 4.1` · `Oracle 23ai` · `Spring Batch 6` · `Flyway V1~V17` · **테스트 168개 (실 Oracle Testcontainers)** · `@Disabled 0`
 
-## 아키텍처
-
-```mermaid
-flowchart LR
-    subgraph exec["실행 모듈"]
-      API["insuhr-api<br/>온라인 REST"]
-      BATCH["insuhr-batch<br/>Spring Batch 잡"]
-      RELAY["insuhr-relay<br/>Outbox 릴레이"]
-    end
-    DOMAIN["insuhr-domain<br/>엔티티 · 도메인 서비스 · 규칙"]
-    COMMON["insuhr-common<br/>암호화 · 마스킹 · 예외 · 응답"]
-    ORA[("Oracle 23ai<br/>Flyway V1~V17")]
-
-    API --> DOMAIN
-    BATCH --> DOMAIN
-    RELAY --> DOMAIN
-    DOMAIN --> COMMON
-    DOMAIN --> ORA
-    API -. migrate .-> ORA
-    BATCH -. validate .-> ORA
-    RELAY -. validate .-> ORA
-```
-
-- **모든 비즈니스 규칙은 `insuhr-domain`에 산다** — 상태 전이·모집자격·발령 재계산은 Controller/앱서비스가 아니라 도메인.
-- 실행 모듈 3종은 **부하 격리**가 목적: 배치가 온라인을 흔들지 않고, 릴레이가 전송 I/O로 업무 트랜잭션을 잡지 않는다.
-- 스키마 소유는 **api 하나만 migrate**, batch·relay는 **validate 전용**(어긋나면 기동 실패).
-
-### 대외 연계 — 하나의 원천에서 파생되는 3계층
-
-```mermaid
-flowchart LR
-    W["기준정보 변경<br/>(업무 + ChangeLog + Outbox, 한 트랜잭션)"]
-    OUT[("TB_IF_OUTBOX")]
-    CL[("TB_IF_CHANGE_LOG")]
-    W --> OUT
-    W --> CL
-    OUT -->|"① 릴레이 팬아웃→전달"| WH["Webhook (기본)"]
-    OUT -->|"kafka 프로파일"| KF["Kafka (key=aggId)"]
-    CL -->|"② GET /sync/changes 커서"| PULL["수신측 Pull"]
-    OUT -.->|"③ 일배치 CSV 스냅샷"| FILE["DW/레거시 파일"]
-```
-
-세 계층이 같은 Outbox/ChangeLog에서 나와 **상호 대사**가 가능하다. 이벤트 페이로드엔 **마스킹 이름·업무키만** 싣고
-민감 원문은 없다(주민번호·계좌가 필요한 시스템은 Pull + 복호화 권한으로 별도 조회).
-
-## 기술 스택
-
-Java 21 · Spring Boot 4.1 (Framework 7) · Spring Batch 6 · Spring Kafka 4.1 · Hibernate 7 · Oracle 23ai Free ·
-Flyway 12 · Gradle 9 Kotlin DSL 멀티모듈 · JUnit 6 · **Testcontainers(실제 Oracle/Kafka — H2 미사용)**.
-
-> Boot 3→4는 프레임워크 메이저가 넷 올랐다(Security 7 · Jackson 3 · Batch 6 · Kafka 4). 무증상 회귀 지점과
-> 정정은 설계서 §3.0에 실측으로 기록돼 있다.
-
-## 빠른 시작 (10분 데모 — 위촉부터 웹훅 수신까지)
-
-```bash
-# 1) Oracle 기동
-docker compose up -d oracle
-
-# 2) API (스키마 migrate 주체) — 별 터미널
-./gradlew :insuhr-api:bootRun            # http://localhost:8080/actuator/health
-
-# 3) 릴레이 (Outbox → 웹훅) — 별 터미널
-./gradlew :insuhr-relay:bootRun
-
-# 4) 로컬 웹훅 수신 덤프 — 별 터미널
-python3 demo/webhook_receiver.py         # http://localhost:9099/hook
-
-# 5) 데모 계정 시드 (마이그레이션은 계정을 안 만든다)
-docker exec -i insuhr-oracle sqlplus -S insuhr/insuhr@localhost:1521/FREEPDB1 < demo/seed.sql
-
-# 6) 부록 B 위촉 E2E 실연
-./demo/run.sh
-```
-
-`run.sh`가 로그인 → 구독자 등록 → 조직/후보 → 자격·교육·보증 → **위촉 → 협회등록(ACTIVE)** → 계좌 복호화 → 변경분 Pull을
-밟고, 잠시 뒤 수신 덤프 창에 `agent.status.changed`·`agent.appointed`가 찍힌다. (Kafka로 받으려면 릴레이를
-`--spring.profiles.active=kafka` + `docker compose --profile kafka up -d kafka`로.)
-
-## 명령어
-
-```bash
-./gradlew build                          # 전체 빌드 + 테스트 (매 Phase 종료 시 그린)
-./gradlew spotlessApply                  # google-java-format (build 전에)
-./gradlew :insuhr-batch:test             # 배치 잡 통합 테스트
-java -jar insuhr-batch/build/libs/insuhr-batch-*.jar \
-     --spring.batch.job.name=eligibilityRefreshJob targetDate=2026-07-17 run.id=1
-```
-
-## Phase 지도 (설계서 §13.2)
-
-| Phase | 내용 |
-|---|---|
-| 0–1 | 멀티모듈 골격, 공통코드·정책값, 계정/RBAC, 암호화·마스킹, JWT |
-| 2 | 조직(이력·시점조회), 인물(주민번호 유일·복호화 접근로그) |
-| 3 | 임직원·발령(**증분 아닌 재계산**), 인사기록카드, 휴가/연차 |
-| 4 | 설계사 상태머신(전이표 단일 원천, 낙관적 잠금, 계보) |
-| 5 | 모집자격 **판정/집행 분리**(순수 함수 + reconciler) |
-| 6 | 3계층 동기화(Outbox 릴레이 2단계, Pull, 스냅샷) |
-| 7 | 배치 9잡(날짜 경계 자격 전이·발령 반영·알림·정합성 리포트) |
-| 8 | 개인정보 파기(익명화+대장+`person.purged`), Kafka 프로파일, 계좌 복호화 |
-
-## 테스트
-
-리포지토리·SQL·API·배치·릴레이 통합 테스트는 **실제 Oracle/Kafka Testcontainers + Flyway**로 돈다(H2로 검증하면
-Oracle 전용 문법에 의존하는 설계라 의미가 없다). 설계서 §12의 시나리오 테스트가 사실상의 인수 기준이다.
+> ⚠️ 포트폴리오용 가상 시스템입니다. 보수교육 주기·재정보증 금액·개인정보 보존기간 등 법령 의존 수치는 하드코딩하지 않고 정책 테이블(`TB_POLICY_CONFIG`)로 관리하며, 실제 적용 시 관계 법령 확인이 필요합니다.
 
 ---
 
-*본 저장소는 포트폴리오 목적의 가상 시스템이다. 법령 의존 수치(교육 주기·보증 금액·개인정보 보존기간 등)는 전부
-`TB_POLICY_CONFIG`의 가정값이며 실제 법령값이 아니다.*
+## 왜 이 도메인인가
+
+보험사의 인적 자원은 근로계약 기반의 **임직원**과 위촉계약 기반의 **설계사**로 나뉩니다. 설계사는 보험업법상 판매자격·법정교육·협회등록·재정보증 등 별도의 관리 요건이 있고, 이 요건이 하나라도 깨지면 모집이 통제되어야 합니다. 또한 인사 정보는 영업·수수료·급여·SSO 등 거의 모든 사내 시스템의 기준정보(Master Data)라서, 변경을 유실 없이 순서대로 전파하는 구조가 시스템의 절반입니다. — 이 두 가지(법적 요건의 데이터화, 기준정보 동기화)가 프로젝트의 중심 문제입니다.
+
+## 핵심 기능
+
+- **인물–역할 모델**: 주민번호(암호화+해시) 기준 인물 1건 위에 직원/설계사 역할 분리. 직원 퇴사 후 설계사 위촉 같은 실무 케이스 지원
+- **설계사 위촉 상태머신**: 후보 → 협회등록 → 활동 → 정지 → 해촉 → 재위촉. 전이표(허용 7 · 금지 18)가 enum 단일 원천, 낙관적 잠금으로 동시 전이 방어, 1 전이 = 1 이력 + 1 이벤트
+- **모집자격 판정**: 자격·보수교육·재정보증·제재를 종합하는 **부수효과 없는 순수 함수** `evaluate(agentId, asOf)` + 판정 결과로만 자동 전이하는 reconciler. 자격 데이터의 모든 쓰기가 재판정을 유발
+- **임직원 발령**: 기안/확정/취소 + 미래일자 예약. 스냅샷은 증분 갱신이 아니라 **재계산 함수**로 정의 → 배치 멱등성이 정의에서 따라 나옴
+- **3계층 동기화**: Transactional Outbox → 2단계 릴레이(팬아웃/전달, 구독자별 순서 게이트, HMAC 서명 웹훅 + Kafka 프로파일) / 워터마크 지연 커서 Pull API / 체크섬 검증 스냅샷 파일
+- **개인정보 통제**: AES-256-GCM 필드 암호화(키 버전), 기본 마스킹 응답, 복호화는 POST+사유+접근로그(같은 트랜잭션), 보존기간 경과 익명화 파기(파기 대장 + `person.purged` 전파)
+- **배치 10종**: 날짜 경계 전이 포착, 만기 알림 적재(유니크 키 멱등), 정합성 점검, 스냅샷 생성, 개인정보 파기 등 — Clock 주입으로 경계일 테스트 가능
+
+## 아키텍처
+
+```
+ insuhr-api ──┐                         ┌── 웹훅 구독자 (영업/그룹웨어)
+ insuhr-batch ┼── Oracle 23ai ── insuhr-relay ──┤
+              │   (HR + Outbox            └── Kafka (프로파일)
+              │    + ChangeLog)
+              └── Pull API /sync/changes ──── 수수료/급여 시스템
+                  스냅샷 파일(일배치) ──────── DW/레거시
+```
+
+| 모듈 | 역할 |
+|---|---|
+| `insuhr-common` | 프레임워크 무관 공통 (예외·마스킹·암호화 유틸) — **의존성 0개 유지** |
+| `insuhr-domain` | JPA 엔티티 + 도메인 서비스(상태머신·판정) + Flyway 마이그레이션 소유 |
+| `insuhr-api` | REST API 서버 (JWT/RBAC, 조직 범위 행 수준 통제) |
+| `insuhr-batch` | Spring Batch 잡 10종 |
+| `insuhr-relay` | Outbox 릴레이 (팬아웃 → 구독자별 전달, 서명·백오프·재시도) |
+
+## 빠른 시작 (10분 데모)
+
+요구사항: JDK 21, Docker
+
+```bash
+docker compose up -d oracle          # Oracle 23ai Free — Flyway가 스키마 구성 (신선한 DB)
+
+# 아래 셋은 각각 별도 터미널에서 (서버는 포그라운드로 뜬다)
+./gradlew :insuhr-api:bootRun        # 8080 — API 서버
+./gradlew :insuhr-relay:bootRun      # 8081 — Outbox 릴레이
+./demo/receiver.sh                   # 9099 — 웹훅 수신 덤프
+
+./demo/run.sh                        # 데모 계정 시드 → 부록 B 시나리오 자동 실행
+```
+
+`run.sh`가 밟는 흐름 (설계서 [부록 B](./insuhr-design-spec.md)):
+
+1. 로그인 → 설계사 후보 등록 (주민번호 해시로 중복 인물 검사)
+2. 판매자격·등록교육·재정보증 등록
+3. 위촉 실행 → 협회 등록번호 입력 → **ACTIVE + 모집가능**
+4. 계좌 복호화 호출 → 원문 + 마스킹 + **접근로그 생성** 확인
+5. 릴레이가 Outbox 이벤트 6건을 팬아웃 → 서명된 웹훅으로 수신 터미널에 도착 → 전 건 `SENT`
+
+## 설계서와 개정 이력 — 이 프로젝트의 실제 산출물
+
+전체 설계는 [insuhr-design-spec.md](./insuhr-design-spec.md) (v2.2, 13장 + 부록) 하나로 관리했고, **구현 실증이 설계서와 충돌할 때마다 설계서를 고쳤습니다.** 개정 이력에서 대표적인 것들:
+
+| 개정 | 실증 내용 |
+|---|---|
+| v1.1 | Boot 4 자동설정 모듈화 — `flyway-core`만으로는 마이그레이션이 **조용히 스킵**(health UP, 테이블 없음). `spring-boot-flyway` 필수. Testcontainers 2.x 아티팩트 개명 |
+| v1.2 | 조직 이력 = 전체 스냅샷 전제 확정(시점 조회가 쿼리 하나로), TIMESTAMP 컬럼 UTC 규약 |
+| v1.5 | Clock 파생 규칙 — 저장 시각은 Instant(UTC), 업무 날짜는 LocalDate(KST), `LocalDateTime` 금지 + 자정 경계 앵커 테스트 |
+| v1.7~1.8 | 릴레이 재설계 — 단일 STATUS로는 다중 구독자 표현 불가 → 이벤트×구독자 전달 레코드 팬아웃, (구독자, aggId) 순서 게이트 |
+| v2.0 | **Batch 6에서 리뷰어 지시가 틀렸음을 실증** — incrementer가 있는 잡은 `start()`가 업무 파라미터를 조용히 폐기. 지시 폐기, 호출자 run.id 방식으로 교정 |
+
+## 테스트가 잡은 버그 하이라이트
+
+순차 테스트·코드 리뷰로는 통과했을, **상태를 다시 읽어야만 보이는** 버그들입니다.
+
+1. **롤백이 잠금 카운트를 되돌림** — 로그인 실패가 예외로 트랜잭션을 롤백시키며 실패 카운트까지 원복 → 계정이 영원히 잠기지 않음. 5회 실패 후 DB 재조회 테스트가 검출, `REQUIRES_NEW` 분리로 해결
+2. **유니크 제약 위반이 영속성 컨텍스트를 오염** — 제약을 방어선 삼아 위반 시 기존 인물로 전환하는 코드가 8스레드 동시 등록에서 7건 실패(rollback-only). 삽입 시도를 격리 트랜잭션에 가둠 — 같은 패턴이 Phase 6 팬아웃에서는 `INSERT…WHERE NOT EXISTS` 단문으로 원천 회피
+3. **프레임워크가 파라미터를 조용히 버림** — Spring Batch 6의 incrementer + 업무 파라미터 조합. 다른 테스트들은 targetDate가 "우연히 오늘"이라 통과 중이었음 → 날짜 고정 테스트가 검출
+
+## v1.1 백로그 (우선순위)
+
+1. 변경감사 AOP + `TB_AUDIT_LOG` — 설계서 [§10.4](./insuhr-design-spec.md)에 의도적 지연으로 문서화. 구현 시 TB_PERSON 민감필드를 감사 JSON에서 소스 제외(파기 정합성 전제)
+2. `PUT /auth/password` + 비밀번호 이력·90일 변경 집행 (정책값은 시드 완료, 엔드포인트 미구현)
+3. Pull API 소비자 관점 계약 테스트
+4. 릴레이 스케일아웃 — aggId 해시 파티셔닝 (현재는 단일 인스턴스 가정을 §9.2에 명시)
+
+## 한계
+
+프런트엔드 없음(REST + OpenAPI까지), 협회/대외계 전문은 인터페이스 규격+Mock, 급여·수수료 계산은 범위 외(기준정보 제공까지). 무엇을 안 만들었는지는 설계서 §1.3(Out of Scope)과 §10.4 백로그에 기록되어 있습니다.

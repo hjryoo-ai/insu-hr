@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# demo/run.sh — 부록 B 위촉 E2E를 curl로 밟는 실연 스크립트 (설계서 부록 B, Phase 8).
+# demo/run.sh — 데모 계정 시드 + 부록 B 위촉 E2E를 curl로 밟는 실연 스크립트 (설계서 부록 B).
 #
-# 전제(3개 프로세스 + 시드):
-#   1) docker compose up -d oracle
-#   2) ./gradlew :insuhr-api:bootRun            # 8080 — 온라인 API(Flyway migrate 주체)
-#   3) ./gradlew :insuhr-relay:bootRun          # Outbox → 웹훅 릴레이
-#   4) python3 demo/webhook_receiver.py         # 9099 — 로컬 웹훅 수신 덤프
-#   5) docker exec -i insuhr-oracle sqlplus -S insuhr/insuhr@localhost:1521/FREEPDB1 < demo/seed.sql
-# 그리고: ./demo/run.sh
+# 전제(신선한 DB + 3개 프로세스):
+#   1) docker compose up -d oracle              # 신선한 스키마(Flyway migrate)
+#   2) ./gradlew :insuhr-api:bootRun            # 8080 — 온라인 API
+#   3) ./gradlew :insuhr-relay:bootRun          # Outbox → 웹훅 릴레이 (별도 터미널)
+#   4) ./demo/receiver.sh                       # 9099 — 로컬 웹훅 수신 덤프 (별도 터미널)
+# 그리고: ./demo/run.sh                          # 이 스크립트가 데모 계정 시드까지 한다
 #
-# 흐름: 로그인 → 웹훅 구독자 등록 → 조직/후보 → 자격·교육·보증 → 위촉 → 협회등록(ACTIVE, agent.appointed)
+# 흐름: (시드) → 로그인 → 웹훅 구독자 → 조직/후보 → 자격·교육·보증 → 위촉 → 협회등록(ACTIVE)
 #       → 계좌 복호화 → 변경분 Pull. 위촉/활성 이벤트가 릴레이를 거쳐 수신 덤프에 찍히는 걸 눈으로 본다.
+# 재실행은 신선한 DB에서(고정 데모 코드 BR-DEMO 등을 쓰므로): docker compose down -v oracle && up.
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:8080}/api/v1"
 RECEIVER="${RECEIVER:-http://localhost:9099/hook}"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 say() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 post() { curl -s -X POST "$BASE$1" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$2"; }
 get()  { curl -s "$BASE$1" -H "Authorization: Bearer $TOKEN"; }
+
+say "데모 계정 시드 (마이그레이션은 계정을 안 만든다 — demo/seed.sql로 심는다)"
+docker exec -i insuhr-oracle sqlplus -S insuhr/insuhr@localhost:1521/FREEPDB1 < "$DIR/seed.sql" >/dev/null \
+  && echo "  demo 계정 준비 완료 (demo / demo1234!)" \
+  || { echo "시드 실패 — oracle 컨테이너(insuhr-oracle)가 떠 있나요?"; exit 1; }
 
 say "0) 로그인 (demo / demo1234!)"
 TOKEN=$(curl -s -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
