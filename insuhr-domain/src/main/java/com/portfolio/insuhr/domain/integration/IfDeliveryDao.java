@@ -48,7 +48,12 @@ public class IfDeliveryDao {
   }
 
   /**
-   * 한 이벤트를 활성 WEBHOOK 구독자(TOPIC_FILTER 매칭)에게 팬아웃한다. 이미 있는 (이벤트,구독자)는 건너뛴다(크래시 재실행 멱등).
+   * 한 이벤트를 활성 <b>푸시 구독자</b>(WEBHOOK·KAFKA, TOPIC_FILTER 매칭)에게 팬아웃한다. 이미 있는 (이벤트,구독자)는 건너뛴다(크래시 재실행
+   * 멱등).
+   *
+   * <p><b>전송 타입 무관 팬아웃</b>(설계서 8 v2.2): DELIVERY_TYPE_CD는 구독자 속성이므로 팬아웃은 타입을 가리지 않고 전달 레코드를 만들고, 전송
+   * 단계가 타입별 퍼블리셔로 갈린다. 그래야 KAFKA 구독자도 WEBHOOK과 <b>같은 순서 게이트</b>를 탄다. PULL·FILE은 푸시가 아니라 제외한다(각각 커서
+   * API·배치 파일 계층).
    *
    * @return 새로 만든 전달 레코드 수 — 0이면 매칭 구독자 없음(대상 없음)
    */
@@ -60,7 +65,7 @@ public class IfDeliveryDao {
             SELECT :eventId, s.SUBSCRIBER_ID, :aggType, :aggId
               FROM TB_IF_SUBSCRIBER s
              WHERE s.USE_YN = 'Y'
-               AND s.DELIVERY_TYPE_CD = 'WEBHOOK'
+               AND s.DELIVERY_TYPE_CD IN ('WEBHOOK', 'KAFKA')
                AND (s.TOPIC_FILTER IS NULL
                     OR JSON_EXISTS(s.TOPIC_FILTER, '$[*]?(@ == $et)' PASSING :eventType AS "et"))
                AND NOT EXISTS (SELECT 1

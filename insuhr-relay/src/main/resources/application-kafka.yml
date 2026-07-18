@@ -1,0 +1,14 @@
+# kafka 프로파일 — Kafka 퍼블리셔 활성 (설계서 8 v2.2 Phase 8).
+#
+# 기본(webhook) 빌드에는 이 파일이 로드되지 않는다. `--spring.profiles.active=kafka`로 켜면
+# KafkaPublisher(@Profile("kafka"))가 등록되고, 팬아웃이 만든 KAFKA 구독자 전달 레코드가
+# 웹훅과 같은 순서 게이트를 타고 이 프로듀서로 나간다. key=aggType:aggId로 파티션 내 순서 보장.
+#
+# 프로듀서 팩토리·직렬화·acks는 KafkaRelayConfig가 소유한다(타입 있는 KafkaTemplate 주입 위해).
+spring:
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+insuhr:
+  relay:
+    kafka:
+      topic: insuhr.events
