@@ -21,6 +21,11 @@ public enum PolicyKey {
   /** 개인정보 보존기간(년) */
   PRIVACY_RETENTION_YEARS,
 
+  /** Pull 커서 워터마크 지연(초). 설계서 9.4 v1.6 기본값 5 — 시퀀스 갭 함정 방지 */
+  SYNC_WATERMARK_SECONDS,
+  /** Outbox 전송 재시도 한도. 설계서 9.2 v1.6 기본값 5 */
+  OUTBOX_MAX_RETRY,
+
   /** 비밀번호 변경 주기(일) */
   PWD_EXPIRE_DAYS,
   /** 비밀번호 최소 길이 */

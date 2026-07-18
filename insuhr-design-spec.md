@@ -935,6 +935,8 @@ POST /api/v1/agents/1024/appoint
 
 세 계층은 동일한 `TB_IF_CHANGE_LOG`/`TB_IF_OUTBOX` 원천에서 파생되므로 상호 검증이 가능하다. 수신 시스템은 ①로 실시간 반영하고 ③으로 일 단위 대사하는 조합을 권장.
 
+- **신규 구독자 초기적재는 백필이 아니다 (v1.6).** 과거 Outbox를 전부 되쏘는 백필은 순서·양쪽에서 위험하다. 올바른 온보딩은 **③ 스냅샷 API로 현재 전수 상태를 받고, 그 시점의 워터마크 `SEQ_NO`를 커서 시작점으로 삼아 ②로 이어받는** 것이다. 스냅샷이 기준선을, 커서가 그 이후 증분을 담당한다.
+
 ### 9.2 Transactional Outbox 흐름
 
 ```
@@ -955,6 +957,13 @@ POST /api/v1/agents/1024/appoint
 - **멱등성**: 수신측은 `eventUuid`로 중복 처리 방지. 재전송은 항상 안전.
 - **순서**: 동일 aggId 이벤트는 EVENT_ID 오름차순으로만 전송(집계 단위 순서 보장).
 - **직렬화 (v1.1)**: Boot 4 기본 JSON은 **Jackson 3**(`tools.jackson`)이다. 페이로드/스냅샷 JSON을 다루는 코드는 `com.fasterxml.jackson`(2.x) 임포트를 섞지 말 것 — 두 버전이 클래스패스에 공존하므로 컴파일은 통과하고 런타임에 설정이 안 먹는 형태로 어긋난다. `ObjectMapper` 대신 Jackson 3의 `JsonMapper`를 쓰고, 커스텀 모듈·직렬화기도 3.x 기준으로 작성한다.
+
+**전송 의미론·순서·서명 (v1.6 — Phase 6 진입 결정)**
+
+- **at-least-once, exactly-once 아님.** 전송 성공 후 SENT 마킹 전에 릴레이가 죽으면 재기동 후 같은 이벤트를 또 보낸다. 이것이 **계약**이다 — 수신측은 `eventUuid` 멱등으로 중복을 흡수한다. exactly-once를 흉내 내려 하지 않는다.
+- **순서 보장은 상태 조회만으로 부족하다.** READY를 EVENT_ID 순으로 집더라도, aggX의 이벤트 N이 FAILED로 재시도 대기 중일 때 N+1을 먼저 보내면 순서가 깨진다. 릴레이 조회에 **"같은 `aggType+aggId`에 미전송(READY/FAILED) 선행 이벤트가 있으면 후행은 집지 않는다"** 게이트를 넣는다(같은 aggId는 직렬, 다른 aggId는 병렬). 실패→후행 보류→재시도 성공→후행 전송 순서를 WireMock으로 검증한다.
+- **서명에 타임스탬프를 포함해 리플레이를 막는다.** `X-InsuHR-Signature: HMAC-SHA256(timestamp + "." + body, secret)` + `X-InsuHR-Timestamp` 헤더. 수신측은 타임스탬프 시간창 밖이면 거절한다. 서명이 본문만 덮으면 캡처된 요청을 무한 재생할 수 있다.
+- **재시도**: 비2xx·타임아웃은 실패. 지수 백오프로 `RETRY_CNT`를 늘리며 재시도하고, 한도(정책값) 초과 시 `FAILED` + `POST /admin/outbox/{eventId}/resend` 수동 재전송. 전송 시도마다 `TB_IF_SEND_LOG` 1행(성공·실패 모두).
 
 ### 9.3 표준 이벤트 카탈로그
 
@@ -1001,6 +1010,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 - 수신측은 마지막 처리 `seqNo`만 저장하면 되는 **커서 재개형**. 어떤 시점에 장애가 나도 그 지점부터 재수신 가능.
 - `snapshot`은 변경 후 전체 상태(state-carried transfer)라 수신측이 순서 꼬임 없이 upsert 가능.
+- **커서의 시퀀스 갭 함정과 워터마크 지연 (v1.6 — Phase 6 진입 결정).** Oracle 시퀀스는 **채번 순서 ≠ 커밋 순서**다. 긴 트랜잭션이 낮은 `SEQ_NO`를 늦게 커밋하면, 커서가 이미 그 지점을 지나간 뒤라 그 행은 **영구 유실**된다(수신측은 다시 조회하지 않는다). 포트폴리오 수준 해법은 **워터마크 지연**: `/sync/changes`는 `CHANGED_AT < 현재시각 - N초`(정책값 `SYNC_WATERMARK_SECONDS`, 기본 5)인 행만 반환한다. N초 안에 커밋되지 못한 트랜잭션은 없다고 가정하는 것이며, 이 함정을 알고 막았다는 것 자체가 설계의 요점이다.
 
 ### 9.5 일배치 스냅샷 파일 레이아웃
 
@@ -1209,9 +1219,18 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
   - **스텁 삭제가 완료 기준인 이유**: `NoOpIntegrationRecorder`는 기능이 빠질 뿐이지만 `AlwaysSatisfiedRequirementChecker`는 **통제를 끄는** 스텁이다 — 살아남으면 무자격 위촉이 통과한다. 주입 교체가 아니라 **소스 제거**로 컴파일 대상에서 사라져야 회귀가 불가능하다
 
 **Phase 6 — 연계**
-- IntegrationRecorder(ChangeLog+Outbox), insuhr-relay(웹훅+서명+재시도, kafka 프로파일), Pull API, 구독자 관리
-- 완료 기준: WireMock 수신 검증, 시나리오 5 통과, 동일 aggId 순서 보장 테스트
+- IntegrationRecorder(ChangeLog+Outbox), insuhr-relay(웹훅+서명+재시도), Pull API, 구독자 관리
+- 완료 기준: WireMock 수신 검증, 시나리오 5 통과, 동일 aggId 순서 보장 테스트, 페이로드 민감정보 부재 테스트
 - ⚠️ 페이로드 직렬화는 Jackson 3(`tools.jackson`) 기준 — 9.2 직렬화 항목 참조
+- **진입 전 확정된 결정 (v1.6)** — 근거는 9.1·9.2·9.4에, 여기엔 목록만
+  - **Jackson 3 `JsonMapper`**를 domain의 recorder 실구현에서 쓴다(common은 여전히 0의존성). jjwt-gson과 격리 공존. 페이로드는 9.3 스키마 + `schemaVersion=1`
+  - **페이로드 민감정보 부재를 테스트로 강제** — 모든 eventType 페이로드에 RRN·계좌·연락처 원문이 없음을 단언(9.3, 10장 통제의 일부)
+  - **순서 게이트** — 같은 `aggType+aggId`에 미전송 선행이 있으면 후행 보류(9.2). 실패→보류→재시도→전송 WireMock 테스트
+  - **Pull 커서 워터마크 지연** — `SYNC_WATERMARK_SECONDS`(기본 5) 이내 행은 반환 안 함(9.4 시퀀스 갭 함정)
+  - **at-least-once + eventUuid 멱등**, 서명에 타임스탬프 포함(9.2)
+  - **`NoOpIntegrationRecorder` 소스 삭제**, 기존 "recorder 1회 호출" 단언은 ChangeLog+Outbox 행 존재 단언으로 승격
+  - **relay 첫 기동**: validate 전용 Flyway(4.2), `SYSTEM-relay` AuditorAware 폴백(13.2 Phase 2), SECRET_ENC AES 키 환경변수 주입
+  - **Kafka는 포트 뒤로 미뤄 Phase 8 선택 과제**(v1.6 조정). 이번 Phase는 `EventPublisher` 포트 + 웹훅 구현만 — 위험은 채널 수가 아니라 순서·멱등·유실 의미론에 있다
 
 **Phase 7 — 배치**
 - 8장의 잡 10종 (우선순위: eligibilityRefresh → guaranteeExpiry → continuingEduNotice → futureAppointApply → hrSnapshotFile → 나머지)
@@ -1279,7 +1298,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 | 버전 | 일자 | 내용 |
 |---|---|---|
-| 1.6 | 2026-07-18 | **Phase 5 진입 결정 (모집자격 판정)** — ① **판정과 집행 분리**(5.4): `evaluate(agentId, asOfDate)`는 순수 함수(전이 없음), 전이는 `AgentEligibilityReconciler`가 상태머신 관문으로. Phase 7 배치가 판정 함수 재사용, `asOfDate`로 앵커 Clock 테스트 적용 ② **보수교육 null 기저선**(5.4): 무이력이면 기한 = `LAST_APPOINT_DT` + 주기 — null을 통과/미충족 어느 쪽으로 읽어도 버그. 3케이스 테스트 ③ **경계 inclusive 통일**(5.4): 보수교육·보증 `>=오늘`, 제재 `START<=오늘<=END`(END null=무기한) ④ **종합 `RECRUIT_ELIG_YN` 정의**(5.4): 공통 게이트 통과 AND 모집가능 종목≥1 — 변액만 없어도 Y ⑤ **복수 보증 합산**(5.4) 기준 `MIN_GRNT_AMT` 비교 ⑥ **`RECRUIT_ELIG_YN` 의미 승격**(5.4, 6.4): "배치 스냅샷"→"마지막 계산 결과", 실시간·배치 둘 다 갱신, 종합 판정이 바뀔 때만 `agent.eligibility.changed` 발행 ⑦ **재위촉 요건 신선도**(5.4, 부록 A): `REG_EDU_REUSE_ON_REAPPOINT` 정책값(기본 Y) ⑧ **Phase 5 완료 기준에 스텁 소스 삭제 명시**(13.2): `AlwaysSatisfiedRequirementChecker`는 통제를 끄는 스텁이라 주입 교체가 아니라 소스 제거로 컴파일 대상에서 없애야 회귀 불가 — 시나리오 1b + resume 게이트 `@Disabled` 해제 포함 |
+| 1.6 | 2026-07-18 | **Phase 5 진입 결정 (모집자격 판정)** — ① **판정과 집행 분리**(5.4): `evaluate(agentId, asOfDate)`는 순수 함수(전이 없음), 전이는 `AgentEligibilityReconciler`가 상태머신 관문으로. Phase 7 배치가 판정 함수 재사용, `asOfDate`로 앵커 Clock 테스트 적용 ② **보수교육 null 기저선**(5.4): 무이력이면 기한 = `LAST_APPOINT_DT` + 주기 — null을 통과/미충족 어느 쪽으로 읽어도 버그. 3케이스 테스트 ③ **경계 inclusive 통일**(5.4): 보수교육·보증 `>=오늘`, 제재 `START<=오늘<=END`(END null=무기한) ④ **종합 `RECRUIT_ELIG_YN` 정의**(5.4): 공통 게이트 통과 AND 모집가능 종목≥1 — 변액만 없어도 Y ⑤ **복수 보증 합산**(5.4) 기준 `MIN_GRNT_AMT` 비교 ⑥ **`RECRUIT_ELIG_YN` 의미 승격**(5.4, 6.4): "배치 스냅샷"→"마지막 계산 결과", 실시간·배치 둘 다 갱신, 종합 판정이 바뀔 때만 `agent.eligibility.changed` 발행 ⑦ **재위촉 요건 신선도**(5.4, 부록 A): `REG_EDU_REUSE_ON_REAPPOINT` 정책값(기본 Y) ⑧ **Phase 5 완료 기준에 스텁 소스 삭제 명시**(13.2): `AlwaysSatisfiedRequirementChecker`는 통제를 끄는 스텁이라 주입 교체가 아니라 소스 제거로 컴파일 대상에서 없애야 회귀 불가 — 시나리오 1b + resume 게이트 `@Disabled` 해제 포함 ⑨ **Phase 5 리뷰 — 활성화 워크플로 불변식**(5.4): `registerAssociation`은 자격 삽입→전이→reconcile 순서로, 워크플로 종료 시 스냅샷 YN=evaluate() 결과("낡은 N 창구" 제거, 보증 만료 시 즉시 SUSPENDED가 정답). 자격 쓰기만 reconcile 유발·전이는 유발 안 함(재진입 방지) ⑩ **Phase 6 진입 결정**(9.1·9.2·9.4·13.2): at-least-once+eventUuid 멱등, 서명에 타임스탬프(리플레이 방지), 순서 게이트(같은 aggId 미전송 선행 있으면 후행 보류), Pull 커서 워터마크 지연(`SYNC_WATERMARK_SECONDS` 기본 5 — 시퀀스 갭 함정), 신규 구독자는 스냅샷+워터마크 커서(백필 아님), Jackson 3 `JsonMapper`, 페이로드 민감정보 부재 테스트, `NoOpIntegrationRecorder` 소스 삭제, Kafka는 Phase 8로 미룸 |
 | 1.5 | 2026-07-18 | **Phase 3 실증 반영 + Phase 4 진입 결정** — ① **`Clock` 파생 규칙**(6.2): 주입 clock 하나에서 저장 시각은 `Instant.now(clock)`(존 무관, UTC 적재 규약 유지), 업무 날짜는 `LocalDate.now(clock)`(KST), `LocalDateTime.now(clock)`은 금지. 앵커 테스트(`2026-08-01T00:05+09:00`)가 규약을 지킨다 ② **트랜잭션 경계 원칙**(10.1.1): 상태를 바꾸는 도메인 서비스는 자기 `@Transactional`(REQUIRED)을 선언한다 — `recalculate()`가 "온라인에서만 우연히 flush"되던 함정. Phase 7 배치 청크 트랜잭션과도 REQUIRED로 무충돌 ③ **마이그레이션 불변성 정책**(4.2): `phase-*` 태그에 든 파일은 불변, 이후 변경은 ALTER 추가(체크섬 불일치·validate 실패 방지) ④ **전이표가 코드의 단일 원천**(5.3): enum 맵 + 5×5 전 행렬 테스트 ⑤ **전이는 원자적**(5.3, 6.4): `TB_AGENT.VERSION` 낙관적 잠금 → 동시 전이 409, 8스레드 테스트 ⑥ **위촉 요건검증 SPI 분리**(5.3): `RecruitmentRequirementChecker` 스텁(Phase 4)→실판정(Phase 5), IntegrationRecorder와 같은 교체 패턴. **시나리오 1을 1a(Phase 4 422 성형)/1b(Phase 5 실판정)로 분할**(12장) ⑦ **재위촉 스냅샷 의미론**(5.3): 마스터=현재, 과거는 이력에만 — `TERMINATE_DT`/`RSN`→NULL, `RECRUIT_ELIG_YN`='N', `FIRST_APPOINT_DT` 보존 ⑧ **resume 판정 게이트는 Phase 5**(5.3): Phase 4는 수동, `@Disabled` 테스트로 빚 표시 ⑨ **계보 순환 방어**(5.3): 도입자 지정 시 조상 체인 검사 + `NOCYCLE` ⑩ **AGENT_CD 시퀀스 채번**(6.4), **인물당 설계사 0..1 유니크 인덱스**(6.4 `UX_AGENT_PERSON`), **`OrgService.close()`의 TB_AGENT 검사** 완성 + `@Disabled` 제거 |
 | 1.4 | 2026-07-17 | **Phase 3 진입 결정 확정 + 개인정보 후속** — ① **발령 스냅샷은 증분 적용이 아니라 재계산**(5.5): 스냅샷을 "기준일 D 이하 CONFIRMED 발령 중 `APPOINT_DT DESC, APPOINT_ID DESC` 첫 행"이라는 함수로 정의하면 배치 멱등성(8장 공통 규칙)과 동일일자 다중 발령의 결정성이 정의에서 따라 나오고, `APPLIED_YN` 같은 두 번째 진실이 필요 없어진다 ② **취소 의미론**(5.5): 반영된 발령은 취소 불가(409), 정정 발령으로만 되돌린다 — 반영된 과거를 지우면 이력·스냅샷이 어긋나고 이미 나간 이벤트의 원인만 사라진다 ③ **시나리오 6을 6a(반영 규칙 — Phase 3)/6b(배치 래퍼 — Phase 7)로 분할**(12장, 13.2): 위험은 배치 배관이 아니라 반영 규칙에 있다 ④ **사번 채번**(6.4): `SEQ_EMP_NO` 기반 무의미 번호 `E00000001`, MAX+1 금지(동시 입사 충돌), 연도 프리픽스 금지(소급·재입사 시 `HIRE_DT`와 어긋나고 사번에서 근속을 추정하는 코드를 부른다) ⑤ **`Clock` 빈 주입**(13.2 Phase 3): 날짜 경계 테스트의 전제이며 Phase 5·7이 그 위에 얹힌다 ⑥ **역할 없는 인물도 파기 대상**(5.2, 8장): v1.3의 "재사용 가능 상태"는 정합성 관점에서만 참이다 — 보유 목적이 없는 개인정보이므로 유예기간 후 `privacyPurgeJob`이 익명화한다 ⑦ **민감정보 복호화는 POST + 사유 본문을 일반 규칙으로 승격**(7.1, 7.2, 10.2): GET이면 열람 사유가 URL로 새어 통제 밖 로그에 남는다. Phase 5 계좌 복호화도 같은 규칙 ⑧ 개정 이력의 중복 `1.1` 행 2건을 하나로 병합(아래 주석) |
 | 1.3 | 2026-07-17 | **Phase 2 실증 반영** — ① **제약 위반 복구는 독립 트랜잭션 필수**(5.2, 10.1.1): JPA는 제약 위반 시 트랜잭션을 rollback-only로 만들어 같은 트랜잭션 내 복구 조회조차 막는다(동시 등록 8건 중 7건 실패로 확인). 인물 INSERT는 REQUIRES_NEW + `saveAndFlush` ② 그 결과 인물 행은 호출부와 무관하게 커밋된다 — 역할 없는 인물은 손상이 아니라 재사용 가능 상태(주민번호 기준 멱등) ③ `_YN` 컬럼 매핑: `YnConverter` + `@JdbcTypeCode(SqlTypes.CHAR)`(3.0) ④ v1.2에서 확정한 "이력 = 전체 스냅샷" 전제가 성립함을 확인 — 시점 조회가 쿼리 하나로 풀리고 폐지 조직 필터링에 분기가 불필요(6.6) |
