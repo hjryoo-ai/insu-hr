@@ -19,15 +19,22 @@ import com.portfolio.insuhr.domain.agent.AgentAppointHistRepository;
 import com.portfolio.insuhr.domain.agent.AgentContractRepository;
 import com.portfolio.insuhr.domain.agent.AgentRepository;
 import com.portfolio.insuhr.domain.agent.AgentStatus;
+import com.portfolio.insuhr.domain.agent.Association;
 import com.portfolio.insuhr.domain.agent.Channel;
+import com.portfolio.insuhr.domain.agent.EduType;
+import com.portfolio.insuhr.domain.agent.GuaranteeStatus;
+import com.portfolio.insuhr.domain.agent.LicenseStatus;
+import com.portfolio.insuhr.domain.agent.LicenseType;
 import com.portfolio.insuhr.domain.agent.TermReason;
 import com.portfolio.insuhr.domain.emp.EmpRepository;
 import com.portfolio.insuhr.domain.emp.EmpType;
+import com.portfolio.insuhr.domain.integration.IntegrationEvent;
 import com.portfolio.insuhr.domain.org.Org;
 import com.portfolio.insuhr.domain.org.OrgRepository;
 import com.portfolio.insuhr.domain.org.OrgType;
 import com.portfolio.insuhr.domain.person.Gender;
 import com.portfolio.insuhr.domain.person.NewPerson;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,6 +65,7 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
   @Autowired MutableClock clock;
   @Autowired RecordingIntegrationRecorder recorder;
   @Autowired ConfigurableRequirementChecker requirementChecker;
+  @Autowired AgentCredentialService credentialService;
 
   @BeforeEach
   void resetDoubles() {
@@ -82,8 +90,30 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
   }
 
   private AgentService.RegisterResult register(Long orgId) {
-    return agentService.registerCandidate(
-        newPerson(), new AgentService.RegisterCommand(Channel.FC, orgId, null));
+    AgentService.RegisterResult reg =
+        agentService.registerCandidate(
+            newPerson(), new AgentService.RegisterCommand(Channel.FC, orgId, null));
+    // 위촉 활성화 워크플로 끝의 재판정(설계서 5.4 v1.6)이 실제 자격을 보므로, ACTIVE를 유지하려면 자격을 갖춰 둔다.
+    // 종목 협회는 registerAssociation이 넣는다. 보증은 clock 기준으로 활성이게.
+    LocalDate today = LocalDate.now(clock);
+    credentialService.registerLicense(
+        reg.agentId(), LicenseType.LIFE, "L", null, today.minusMonths(1), LicenseStatus.VALID);
+    credentialService.registerEducation(
+        reg.agentId(), EduType.REG, "등록교육", today.minusMonths(1), new BigDecimal("20"), "협회");
+    credentialService.registerGuarantee(
+        reg.agentId(),
+        "SURETY_INS",
+        new BigDecimal("10000000"),
+        "보증사",
+        "P",
+        today.minusMonths(1),
+        today.plusYears(10),
+        GuaranteeStatus.ACTIVE);
+    return reg;
+  }
+
+  private void activate(Long agentId, LocalDate eventDt, String regNo) {
+    agentService.registerAssociation(agentId, eventDt, Association.LIFE_ASSOC, regNo);
   }
 
   private void appoint(Long agentId, LocalDate appointDt) {
@@ -111,7 +141,7 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
     assertThat(reload(reg.agentId()).getStatus()).isEqualTo(AgentStatus.PENDING_ASSOC);
     assertThat(contractRepository.findByAgentIdOrderByValidFromDtDesc(reg.agentId())).hasSize(1);
 
-    agentService.registerAssociation(reg.agentId(), LocalDate.of(2026, 3, 5), "L-2026-001");
+    activate(reg.agentId(), LocalDate.of(2026, 3, 5), "L-2026-001");
     assertThat(reload(reg.agentId()).getStatus()).isEqualTo(AgentStatus.ACTIVE);
 
     agentService.suspend(reg.agentId(), LocalDate.of(2026, 4, 1), "EDU_OVERDUE", "보수교육 미이수");
@@ -164,10 +194,12 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
     assertThat(recorder.events()).hasSize(1);
     assertThat(recorder.events().get(0).eventType()).isEqualTo("agent.status.changed");
 
+    // 협회등록 워크플로는 전이(agent.appointed)와 활성화 재판정(agent.eligibility.changed Y)을 함께 낸다 (설계서 5.4 v1.6).
     recorder.clear();
-    agentService.registerAssociation(reg.agentId(), LocalDate.of(2026, 3, 5), "L-1");
-    assertThat(recorder.events()).hasSize(1);
-    assertThat(recorder.events().get(0).eventType()).isEqualTo("agent.appointed");
+    activate(reg.agentId(), LocalDate.of(2026, 3, 5), "L-1");
+    assertThat(recorder.events())
+        .extracting(IntegrationEvent::eventType)
+        .containsExactly("agent.appointed", "agent.eligibility.changed");
 
     recorder.clear();
     agentService.terminate(reg.agentId(), LocalDate.of(2026, 3, 9), TermReason.COMPANY, "회사 해촉");
@@ -184,7 +216,7 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
     Long org = newOrg();
     AgentService.RegisterResult reg = register(org);
     appoint(reg.agentId(), LocalDate.of(2025, 6, 1));
-    agentService.registerAssociation(reg.agentId(), LocalDate.of(2025, 6, 2), "L-1");
+    activate(reg.agentId(), LocalDate.of(2025, 6, 2), "L-1");
     agentService.terminate(reg.agentId(), LocalDate.of(2025, 6, 1), TermReason.SELF, "자진");
 
     // 해촉 6/1 + 6개월 = 12/1. 그 전날(11/30)에는 냉각기간 미경과로 거부.
@@ -215,7 +247,7 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
     Long org = newOrg();
     AgentService.RegisterResult reg = register(org);
     appoint(reg.agentId(), LocalDate.of(2020, 1, 1));
-    agentService.registerAssociation(reg.agentId(), LocalDate.of(2020, 1, 2), "L-1");
+    activate(reg.agentId(), LocalDate.of(2020, 1, 2), "L-1");
     agentService.terminate(
         reg.agentId(), LocalDate.of(2020, 1, 1), TermReason.DISCIPLINE, "모집질서 문란");
 
@@ -233,7 +265,7 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
     Long org = newOrg();
     AgentService.RegisterResult reg = register(org); // hist: null→CANDIDATE
     appoint(reg.agentId(), LocalDate.of(2025, 1, 1)); // →PENDING_ASSOC
-    agentService.registerAssociation(reg.agentId(), LocalDate.of(2025, 1, 2), "L-1"); // →ACTIVE
+    activate(reg.agentId(), LocalDate.of(2025, 1, 2), "L-1"); // →ACTIVE
     agentService.terminate(
         reg.agentId(), LocalDate.of(2025, 1, 3), TermReason.SELF, "자진"); // →TERMINATED
     clock.setDate(LocalDate.of(2025, 8, 1));

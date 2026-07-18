@@ -3,6 +3,7 @@ package com.portfolio.insuhr.api.agent;
 import com.portfolio.insuhr.api.support.TraceIdProvider;
 import com.portfolio.insuhr.common.response.ApiResponse;
 import com.portfolio.insuhr.domain.agent.Agent;
+import com.portfolio.insuhr.domain.agent.Association;
 import com.portfolio.insuhr.domain.agent.Channel;
 import com.portfolio.insuhr.domain.agent.TermReason;
 import com.portfolio.insuhr.domain.person.Gender;
@@ -88,7 +89,8 @@ public class AgentController {
   @PreAuthorize("hasAuthority('agent.write')")
   public ApiResponse<Void> registerAssociation(
       @PathVariable Long agentId, @Valid @RequestBody AssocRegRequest request) {
-    agentService.registerAssociation(agentId, request.regDt(), request.assocRegNo());
+    agentService.registerAssociation(
+        agentId, request.regDt(), request.assoc(), request.assocRegNo());
     return ApiResponse.ok(null, TraceIdProvider.current());
   }
 
@@ -167,7 +169,9 @@ public class AgentController {
       @Size(max = 100) String accountHolderNm) {}
 
   public record AssocRegRequest(
-      @NotNull LocalDate regDt, @NotBlank @Size(max = 30) String assocRegNo) {}
+      @NotNull LocalDate regDt,
+      @NotNull Association assoc,
+      @NotBlank @Size(max = 30) String assocRegNo) {}
 
   public record SuspendRequest(
       @NotNull LocalDate eventDt,

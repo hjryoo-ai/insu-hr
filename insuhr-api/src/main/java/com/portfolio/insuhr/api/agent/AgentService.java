@@ -12,8 +12,10 @@ import com.portfolio.insuhr.domain.agent.AgentErrorCode;
 import com.portfolio.insuhr.domain.agent.AgentGenealogyQueryDao;
 import com.portfolio.insuhr.domain.agent.AgentLifecycleService;
 import com.portfolio.insuhr.domain.agent.AgentRepository;
+import com.portfolio.insuhr.domain.agent.Association;
 import com.portfolio.insuhr.domain.agent.Channel;
 import com.portfolio.insuhr.domain.agent.TermReason;
+import com.portfolio.insuhr.domain.eligibility.AgentEligibilityReconciler;
 import com.portfolio.insuhr.domain.eligibility.EligibilityResult;
 import com.portfolio.insuhr.domain.eligibility.RecruitEligibilityService;
 import com.portfolio.insuhr.domain.org.Org;
@@ -46,6 +48,8 @@ public class AgentService {
   private final OrgRepository orgRepository;
   private final AesGcmCipher cipher;
   private final RecruitEligibilityService eligibilityService;
+  private final AgentCredentialService credentialService;
+  private final AgentEligibilityReconciler reconciler;
 
   public AgentService(
       PersonService personService,
@@ -56,7 +60,9 @@ public class AgentService {
       AgentCodeGenerator agentCodeGenerator,
       OrgRepository orgRepository,
       AesGcmCipher cipher,
-      RecruitEligibilityService eligibilityService) {
+      RecruitEligibilityService eligibilityService,
+      AgentCredentialService credentialService,
+      AgentEligibilityReconciler reconciler) {
     this.personService = personService;
     this.lifecycleService = lifecycleService;
     this.agentRepository = agentRepository;
@@ -66,6 +72,8 @@ public class AgentService {
     this.orgRepository = orgRepository;
     this.cipher = cipher;
     this.eligibilityService = eligibilityService;
+    this.credentialService = credentialService;
+    this.reconciler = reconciler;
   }
 
   /**
@@ -121,14 +129,19 @@ public class AgentService {
   /**
    * 협회 등록번호 입력 → ACTIVE (설계서 7.2, 부록 B 6단계).
    *
-   * <p><b>여기서 재판정하지 않는다.</b> 이건 위촉 워크플로 전이(협회 등록번호 수신)이지 자격 쓰기가 아니다 — 자격을 바꾸는 것은 {@code
-   * AgentCredentialService}의 자격·교육·보증·제재·종목협회 등록이고, 그쪽만 reconciler를 탄다(설계서 5.4 v1.6). 이 전이 직후 재판정을
-   * 걸면 아직 종목 협회 등록(TB_ASSOC_REG)이 안 된 시점이라 갓 ACTIVE가 된 설계사를 곧바로 자동 SUSPENDED로 떨어뜨린다. {@code
-   * RECRUIT_ELIG_YN}은 이후 자격 쓰기나 배치가 갱신한다.
+   * <p><b>순서가 불변식이다 (설계서 5.4 v1.6): ① 자격 데이터(TB_ASSOC_REG) 삽입 → ② PENDING_ASSOC→ACTIVE 전이 → ③
+   * reconcile 1회.</b> 협회 등록번호가 곧 종목 협회 등록 자격이므로, 자격을 전이보다 먼저 넣어야 ③의 판정이 이를 보고 통과한다. 그 결과 워크플로 종료
+   * 시점에 {@code RECRUIT_ELIG_YN} = evaluate() 결과가 되어 "낡은 N 창구"가 없고, {@code agent.appointed}와 {@code
+   * agent.eligibility.changed(Y)}가 함께 나간다. 요건검증과 협회번호 수신 사이에 재정보증이 만료됐다면 ③에서 즉시 SUSPENDED가 되는데, 이는
+   * 버그가 아니라 정답이다(보증 만료 상태로 모집 가능한 것이 최악이다).
    */
   @Transactional
-  public void registerAssociation(Long agentId, LocalDate eventDt, String assocRegNo) {
-    lifecycleService.registerAssociation(agentId, eventDt, assocRegNo);
+  public void registerAssociation(
+      Long agentId, LocalDate eventDt, Association assoc, String assocRegNo) {
+    credentialService.registerAssoc(
+        agentId, assoc, assocRegNo, eventDt); // ① 자격 삽입 (PENDING_ASSOC라 무전이)
+    lifecycleService.registerAssociation(agentId, eventDt, assocRegNo); // ② 전이
+    reconciler.reconcile(agentId); // ③ 워크플로 종료 재판정 — 스냅샷 YN = evaluate() 결과
   }
 
   /** 모집정지 (설계서 7.2 {@code POST /agents/{id}/suspend}). */

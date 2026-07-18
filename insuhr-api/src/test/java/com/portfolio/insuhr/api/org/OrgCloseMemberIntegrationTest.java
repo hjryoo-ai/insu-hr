@@ -10,6 +10,7 @@ import com.portfolio.insuhr.api.support.AbstractIntegrationTest;
 import com.portfolio.insuhr.api.support.StubRequirementCheckerConfig;
 import com.portfolio.insuhr.api.support.TestSeq;
 import com.portfolio.insuhr.common.exception.BusinessException;
+import com.portfolio.insuhr.domain.agent.Association;
 import com.portfolio.insuhr.domain.agent.Channel;
 import com.portfolio.insuhr.domain.agent.TermReason;
 import com.portfolio.insuhr.domain.emp.AppointType;
@@ -138,7 +139,8 @@ class OrgCloseMemberIntegrationTest extends AbstractIntegrationTest {
         agentId,
         LocalDate.of(2026, 1, 2),
         new AgentService.ContractCommand("FC_STD", "2026-1", null, null, null));
-    agentService.registerAssociation(agentId, LocalDate.of(2026, 1, 3), "L-1");
+    agentService.registerAssociation(
+        agentId, LocalDate.of(2026, 1, 3), Association.LIFE_ASSOC, "L-1");
     agentService.terminate(agentId, LocalDate.of(2026, 1, 10), TermReason.SELF, "자진");
 
     assertThatCode(() -> orgService.close(cd, LocalDate.of(2026, 6, 30), "해촉자만 남음"))

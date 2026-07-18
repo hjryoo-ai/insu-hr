@@ -96,8 +96,10 @@ class AgentEligibilityIntegrationTest extends AbstractIntegrationTest {
         .agentId();
   }
 
-  /** 생보 종목으로 완전 자격화 (라이선스·등록교육·재정보증·협회). 보증 만기는 인자로. */
-  private void credentialLife(Long agentId, LocalDate guaranteeEnd) {
+  /**
+   * 위촉 요건까지 자격화 (라이선스·등록교육·재정보증). 종목 협회 등록은 registerAssociation이 활성화 시점에 넣는다(부록 B 6번). 보증 만기는 인자로.
+   */
+  private void credentialForAppoint(Long agentId, LocalDate guaranteeEnd) {
     credentialService.registerLicense(
         agentId, LicenseType.LIFE, "L-1", null, LocalDate.of(2026, 1, 1), LicenseStatus.VALID);
     credentialService.registerEducation(
@@ -111,20 +113,21 @@ class AgentEligibilityIntegrationTest extends AbstractIntegrationTest {
         LocalDate.of(2026, 1, 1),
         guaranteeEnd,
         GuaranteeStatus.ACTIVE);
-    credentialService.registerAssoc(
-        agentId, Association.LIFE_ASSOC, "A-1", LocalDate.of(2026, 2, 15));
   }
 
-  /** 완전 자격화 + 위촉 + 협회등록 → ACTIVE + 재판정으로 RECRUIT_ELIG_YN=Y. */
+  /**
+   * 완전 자격화 + 위촉 + 협회등록 → ACTIVE. registerAssociation이 종목 협회 삽입 + 전이 + 재판정을 한 번에 하므로
+   * RECRUIT_ELIG_YN=Y.
+   */
   private Long activeEligibleAgent(LocalDate guaranteeEnd) {
     Long agentId = registerCandidate(newOrg());
-    credentialLife(agentId, guaranteeEnd);
+    credentialForAppoint(agentId, guaranteeEnd);
     agentService.appoint(
         agentId,
         LocalDate.of(2026, 3, 1),
         new AgentService.ContractCommand("FC_STD", "2026-1", null, null, null));
-    agentService.registerAssociation(agentId, LocalDate.of(2026, 3, 2), "L-2026");
-    reconciler.reconcile(agentId); // ACTIVE 상태에서 판정 → RECRUIT_ELIG_YN=Y
+    agentService.registerAssociation(
+        agentId, LocalDate.of(2026, 3, 2), Association.LIFE_ASSOC, "L-2026");
     return agentId;
   }
 
@@ -353,6 +356,51 @@ class AgentEligibilityIntegrationTest extends AbstractIntegrationTest {
         FAR,
         GuaranteeStatus.ACTIVE);
     assertThat(statusOf(agentId)).as("보증 갱신으로 자동 재활성화").isEqualTo(AgentStatus.ACTIVE);
+  }
+
+  @Test
+  @DisplayName("불변식: 정상 위촉 워크플로 종료 시 appointed와 eligibility.changed(Y)가 함께 나가고 스냅샷 YN=Y다")
+  void activationSnapshotMatchesEvaluate() {
+    Long agentId = registerCandidate(newOrg());
+    credentialForAppoint(agentId, FAR);
+    agentService.appoint(
+        agentId,
+        LocalDate.of(2026, 3, 1),
+        new AgentService.ContractCommand("FC_STD", "2026-1", null, null, null));
+    recorder.clear();
+
+    agentService.registerAssociation(
+        agentId, LocalDate.of(2026, 3, 2), Association.LIFE_ASSOC, "L-1");
+
+    assertThat(statusOf(agentId)).isEqualTo(AgentStatus.ACTIVE);
+    assertThat(agentRepository.findById(agentId).orElseThrow().isRecruitEligible())
+        .as("워크플로 종료 시 스냅샷 YN = evaluate() 결과 (낡은 N 창구 없음)")
+        .isTrue();
+    assertThat(recorder.events())
+        .extracting(IntegrationEvent::eventType)
+        .contains("agent.appointed", "agent.eligibility.changed");
+  }
+
+  @Test
+  @DisplayName("불변식 역방향: 요건검증 후 보증이 만료되면 협회등록으로 활성화돼도 즉시 SUSPENDED가 된다 (정답)")
+  void guaranteeExpiredBetweenAppointAndActivationYieldsSuspended() {
+    clock.setDate(LocalDate.of(2026, 2, 1));
+    Long agentId = registerCandidate(newOrg());
+    // 위촉 시점(2/1)엔 유효하지만 2/15에 만료되는 보증.
+    credentialForAppoint(agentId, LocalDate.of(2026, 2, 15));
+    agentService.appoint(
+        agentId,
+        LocalDate.of(2026, 2, 1),
+        new AgentService.ContractCommand("FC_STD", "2026-1", null, null, null));
+
+    // 며칠 흘러 보증이 만료된 뒤 협회 등록번호 수신.
+    clock.setDate(LocalDate.of(2026, 3, 1));
+    agentService.registerAssociation(
+        agentId, LocalDate.of(2026, 3, 1), Association.LIFE_ASSOC, "L-1");
+
+    // 활성화 워크플로 끝의 재판정이 보증 만료를 보고 즉시 정지시킨다 — 버그가 아니라 정답.
+    assertThat(statusOf(agentId)).isEqualTo(AgentStatus.SUSPENDED);
+    assertThat(agentRepository.findById(agentId).orElseThrow().isRecruitEligible()).isFalse();
   }
 
   @Test

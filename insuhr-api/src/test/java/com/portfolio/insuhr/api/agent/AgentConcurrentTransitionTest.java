@@ -10,12 +10,17 @@ import com.portfolio.insuhr.api.support.TestSeq;
 import com.portfolio.insuhr.domain.agent.Agent;
 import com.portfolio.insuhr.domain.agent.AgentRepository;
 import com.portfolio.insuhr.domain.agent.AgentStatus;
+import com.portfolio.insuhr.domain.agent.Association;
 import com.portfolio.insuhr.domain.agent.Channel;
+import com.portfolio.insuhr.domain.agent.GuaranteeStatus;
+import com.portfolio.insuhr.domain.agent.LicenseStatus;
+import com.portfolio.insuhr.domain.agent.LicenseType;
 import com.portfolio.insuhr.domain.org.Org;
 import com.portfolio.insuhr.domain.org.OrgRepository;
 import com.portfolio.insuhr.domain.org.OrgType;
 import com.portfolio.insuhr.domain.person.Gender;
 import com.portfolio.insuhr.domain.person.NewPerson;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -44,6 +49,7 @@ class AgentConcurrentTransitionTest extends AbstractIntegrationTest {
   private static final AtomicInteger SEQ = new AtomicInteger(1);
 
   @Autowired AgentService agentService;
+  @Autowired AgentCredentialService credentialService;
   @Autowired AgentRepository agentRepository;
   @Autowired OrgRepository orgRepository;
   @Autowired MutableClock clock;
@@ -72,11 +78,24 @@ class AgentConcurrentTransitionTest extends AbstractIntegrationTest {
                 null,
                 "KR"),
             new AgentService.RegisterCommand(Channel.FC, orgId, null));
+    // 활성화 워크플로 끝의 재판정이 실제 자격을 보므로, ACTIVE를 유지하려면 자격을 갖춰 둔다 (설계서 5.4 v1.6).
+    credentialService.registerLicense(
+        reg.agentId(), LicenseType.LIFE, "L", null, LocalDate.of(2026, 1, 1), LicenseStatus.VALID);
+    credentialService.registerGuarantee(
+        reg.agentId(),
+        "SURETY_INS",
+        new BigDecimal("10000000"),
+        "보증사",
+        "P",
+        LocalDate.of(2026, 1, 1),
+        LocalDate.of(2036, 1, 1),
+        GuaranteeStatus.ACTIVE);
     agentService.appoint(
         reg.agentId(),
         LocalDate.of(2026, 3, 1),
         new AgentService.ContractCommand("FC_STD", "2026-1", null, null, null));
-    agentService.registerAssociation(reg.agentId(), LocalDate.of(2026, 3, 2), "L-1");
+    agentService.registerAssociation(
+        reg.agentId(), LocalDate.of(2026, 3, 2), Association.LIFE_ASSOC, "L-1");
 
     int threads = 8;
     CyclicBarrier startTogether = new CyclicBarrier(threads);
