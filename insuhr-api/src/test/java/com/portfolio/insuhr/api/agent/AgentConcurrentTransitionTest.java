@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.portfolio.insuhr.api.support.AbstractIntegrationTest;
 import com.portfolio.insuhr.api.support.MutableClock;
+import com.portfolio.insuhr.api.support.StubRequirementCheckerConfig;
 import com.portfolio.insuhr.api.support.TestClockConfig;
 import com.portfolio.insuhr.api.support.TestSeq;
 import com.portfolio.insuhr.domain.agent.Agent;
@@ -37,7 +38,7 @@ import org.springframework.context.annotation.Import;
  * TB_AGENT.VERSION} 낙관적 잠금이 이 틈을 닫는다 — 8스레드가 동시에 정지를 걸어도 정확히 하나만 이기고 나머지는 충돌로 실패한다. Phase 2의 동시 인물
  * 등록 테스트와 같은 패턴이다.
  */
-@Import(TestClockConfig.class)
+@Import({TestClockConfig.class, StubRequirementCheckerConfig.class})
 class AgentConcurrentTransitionTest extends AbstractIntegrationTest {
 
   private static final AtomicInteger SEQ = new AtomicInteger(1);

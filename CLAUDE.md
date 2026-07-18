@@ -4,26 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~4 완료** (2026-07-18). `./gradlew build` 그린, 테스트 126개(+`@Disabled` 1). 마이그레이션 V1~V11.
+**Phase 0~5 완료** (2026-07-18). `./gradlew build` 그린, 테스트 139개(`@Disabled` 0). 마이그레이션 V1~V12.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
 - Phase 2: 조직+이력(V6), 인물+주소+FK 보강(V7), 조직 트리 시점 조회, 중복차단(유니크 제약+동시성), 복호화+접근로그, IntegrationRecorder 스텁, AuditorAware 전환
 - Phase 3: 임직원+발령(V8), 인사기록카드 6종(V9), 휴가/연차(V10). 발령 반영은 **증분이 아니라 재계산**(`AppointmentApplyService`) — 스냅샷 = "CONFIRMED이고 발령일≤기준일인 발령 중 (발령일, ID) 최대"라는 함수(설계서 5.5). `Clock` 빈 주입으로 날짜 경계 테스트(시나리오 6a). 사번은 `SEQ_EMP_NO` 무의미 번호
-- Phase 4: 설계사+위촉이력+위촉계약(V11), 상태머신 `AgentLifecycleService`. **전이표는 `AgentStatus`의 enum 맵 하나가 단일 원천**(5×5 전 행렬 테스트). 전이는 원자적 — `TB_AGENT.VERSION` 낙관적 잠금(동시 전이 409, 8스레드 테스트). **모든 전이가 상태머신 한 관문을 지나 이력 1행 + 이벤트 1건을 남긴다**(recorder 호출도 거기, 구조로 보장). 위촉 요건검증은 `RecruitmentRequirementChecker` SPI(스텁→Phase 5). 재위촉은 같은 `AGENT_ID` 유지 + 현재상태 컬럼 리셋(과거는 이력에만). 계보 `CONNECT BY NOCYCLE` + 도입자 순환 방어. `AGENT_CD`는 `SEQ_AGENT_CD` 무의미 번호. `OrgService.close()`의 TB_AGENT 검사 완성 + `@Disabled` 제거
+- Phase 4: 설계사+위촉이력+위촉계약(V11), 상태머신 `AgentLifecycleService`. **전이표는 `AgentStatus`의 enum 맵 하나가 단일 원천**(5×5 전 행렬 테스트). 전이는 원자적 — `TB_AGENT.VERSION` 낙관적 잠금(동시 전이 409, 8스레드 테스트). **모든 전이가 상태머신 한 관문을 지나 이력 1행 + 이벤트 1건을 남긴다**(recorder 호출도 거기, 구조로 보장). 재위촉은 같은 `AGENT_ID` 유지 + 현재상태 컬럼 리셋(과거는 이력에만). 계보 `CONNECT BY NOCYCLE` + 도입자 순환 방어
+- Phase 5: 자격·교육·보증·제재+교차모집·불완전판매(V12), 모집자격 판정. **판정과 집행 분리** — `RecruitEligibilityService.evaluate(agentId, asOf)`는 부수효과 없는 순수 함수(종목별 판정), `AgentEligibilityReconciler`가 결과를 받아 자동 ACTIVE↔SUSPENDED + `RECRUIT_ELIG_YN`("마지막 계산 결과") 갱신 + 종합 판정이 실제로 바뀔 때만 `agent.eligibility.changed` 발행. **자격·교육·보증·제재의 모든 쓰기가 reconciler를 탄다**(`AgentCredentialService`) — 제재 등록 시 자동 정지도 이 경로. 보수교육 null 기저선 = `LAST_APPOINT_DT`+주기. 경계 inclusive. 종합 YN = 공통 게이트 통과 AND 모집가능 종목≥1(변액만 없어도 Y). 복수 보증 합산. 위촉 요건검증 스텁을 실판정 `EligibilityRequirementChecker`로 교체하고 **`AlwaysSatisfiedRequirementChecker` 소스 삭제**. resume 판정 게이트 추가 + `@Disabled` 제거
 
-다음은 설계서 §13.2의 **Phase 5 — 자격·교육·보증·제재 + 모집자격**: LICENSE/ASSOC_REG/CROSS_SELL/EDU(+POLICY)/GUARANTEE/SANCTION/MISSELL, `RecruitEligibilityService`. 완료 기준은 판정 규칙표(§5.4) 전 항목 + 시나리오 3, 그리고 1b(실제 요건 미충족 판정).
+다음은 설계서 §13.2의 **Phase 6 — 연계**: `IntegrationRecorder` 실구현(ChangeLog+Outbox), insuhr-relay(웹훅+서명+재시도, kafka 프로파일), Pull API, 구독자 관리. 완료 기준은 WireMock 수신 검증 + 시나리오 5 + 동일 aggId 순서 보장.
 
-Phase 5+에서 갚아야 할 것:
-- `AlwaysSatisfiedRequirementChecker`(위촉 요건검증 스텁) — Phase 5에서 `RecruitEligibilityService` 기반 실판정을 붙이고 **이 클래스를 삭제**한다(`NoOpIntegrationRecorder`와 같은 방식). 상태머신 서비스는 무수정. 시나리오 1b가 여기서 완결
-- **resume 판정 게이트** — 지금 정지해제는 판정 없이 열려 있다. `AgentLifecycleIntegrationTest`에 `@Disabled("Phase 5: eligibility 게이트")` 테스트가 빚으로 남아 있다. Phase 5에서 게이트 추가 후 그 `@Disabled` 제거
-- `NoOpIntegrationRecorder` — Phase 6에서 실제 구현을 붙이고 **이 클래스를 삭제**한다(조건부 등록이 아니라 삭제)
+Phase 6+에서 갚아야 할 것:
+- `NoOpIntegrationRecorder` — Phase 6에서 실제 구현(Outbox+ChangeLog INSERT)을 붙이고 **이 클래스를 삭제**한다(조건부 등록이 아니라 삭제). 서비스·reconciler는 무수정
 - **Phase 7 `futureAppointApplyJob`** — `AppointmentApplyService`를 **감싸기만** 한다(반영 규칙 재구현 금지). 시나리오 6b(배치 래퍼+멱등)가 여기서 완결
 - **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4)
 
 ## 단일 사양(SSOT)
 
-`insuhr-design-spec.md`(현재 **v1.5**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
+`insuhr-design-spec.md`(현재 **v1.6**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
 설계서와 다르게 구현해야 할 이유가 있으면 임의로 벗어나지 말고 사용자에게 먼저 알린다.
 
 **설계서가 현실과 어긋나는 것을 발견하면 CLAUDE.md나 코드 주석에만 우회 기록을 남기지 말고 설계서 본문을 개정하고 말미의 개정 이력에 남긴다.** 그렇게 하지 않으면 다음 세션이 "설계서 우선" 규칙을 근거로 정정을 되돌린다. 이 파일에는 결론만 두고 근거·상세는 설계서에 둔다.

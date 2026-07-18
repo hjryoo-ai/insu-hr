@@ -16,6 +16,8 @@ public enum PolicyKey {
   MIN_GRNT_AMT,
   /** 해촉 후 재위촉 제한기간(개월). 설계서 5.3 기본값 6 */
   REAPPOINT_COOLDOWN_MONTHS,
+  /** 재위촉 시 과거 등록교육 재사용 여부(Y/N). 설계서 5.4 v1.6 기본값 Y */
+  REG_EDU_REUSE_ON_REAPPOINT,
   /** 개인정보 보존기간(년) */
   PRIVACY_RETENTION_YEARS,
 

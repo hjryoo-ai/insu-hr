@@ -2,6 +2,7 @@ package com.portfolio.insuhr.api.agent;
 
 import com.portfolio.insuhr.api.person.PersonService;
 import com.portfolio.insuhr.common.crypto.AesGcmCipher;
+import com.portfolio.insuhr.common.error.ErrorDetail;
 import com.portfolio.insuhr.common.exception.BusinessException;
 import com.portfolio.insuhr.domain.agent.Agent;
 import com.portfolio.insuhr.domain.agent.AgentCodeGenerator;
@@ -13,6 +14,8 @@ import com.portfolio.insuhr.domain.agent.AgentLifecycleService;
 import com.portfolio.insuhr.domain.agent.AgentRepository;
 import com.portfolio.insuhr.domain.agent.Channel;
 import com.portfolio.insuhr.domain.agent.TermReason;
+import com.portfolio.insuhr.domain.eligibility.EligibilityResult;
+import com.portfolio.insuhr.domain.eligibility.RecruitEligibilityService;
 import com.portfolio.insuhr.domain.org.Org;
 import com.portfolio.insuhr.domain.org.OrgErrorCode;
 import com.portfolio.insuhr.domain.org.OrgRepository;
@@ -42,6 +45,7 @@ public class AgentService {
   private final AgentCodeGenerator agentCodeGenerator;
   private final OrgRepository orgRepository;
   private final AesGcmCipher cipher;
+  private final RecruitEligibilityService eligibilityService;
 
   public AgentService(
       PersonService personService,
@@ -51,7 +55,8 @@ public class AgentService {
       AgentGenealogyQueryDao genealogyQueryDao,
       AgentCodeGenerator agentCodeGenerator,
       OrgRepository orgRepository,
-      AesGcmCipher cipher) {
+      AesGcmCipher cipher,
+      RecruitEligibilityService eligibilityService) {
     this.personService = personService;
     this.lifecycleService = lifecycleService;
     this.agentRepository = agentRepository;
@@ -60,6 +65,7 @@ public class AgentService {
     this.agentCodeGenerator = agentCodeGenerator;
     this.orgRepository = orgRepository;
     this.cipher = cipher;
+    this.eligibilityService = eligibilityService;
   }
 
   /**
@@ -112,7 +118,14 @@ public class AgentService {
             appointDt));
   }
 
-  /** 협회 등록번호 입력 → ACTIVE (설계서 7.2, 부록 B 6단계). */
+  /**
+   * 협회 등록번호 입력 → ACTIVE (설계서 7.2, 부록 B 6단계).
+   *
+   * <p><b>여기서 재판정하지 않는다.</b> 이건 위촉 워크플로 전이(협회 등록번호 수신)이지 자격 쓰기가 아니다 — 자격을 바꾸는 것은 {@code
+   * AgentCredentialService}의 자격·교육·보증·제재·종목협회 등록이고, 그쪽만 reconciler를 탄다(설계서 5.4 v1.6). 이 전이 직후 재판정을
+   * 걸면 아직 종목 협회 등록(TB_ASSOC_REG)이 안 된 시점이라 갓 ACTIVE가 된 설계사를 곧바로 자동 SUSPENDED로 떨어뜨린다. {@code
+   * RECRUIT_ELIG_YN}은 이후 자격 쓰기나 배치가 갱신한다.
+   */
   @Transactional
   public void registerAssociation(Long agentId, LocalDate eventDt, String assocRegNo) {
     lifecycleService.registerAssociation(agentId, eventDt, assocRegNo);
@@ -124,9 +137,23 @@ public class AgentService {
     lifecycleService.suspend(agentId, eventDt, rsnCd, rsnTxt);
   }
 
-  /** 정지해제 (설계서 7.2 {@code POST /agents/{id}/resume}). */
+  /**
+   * 정지해제 (설계서 7.2 {@code POST /agents/{id}/resume}).
+   *
+   * <p><b>모집자격 판정 게이트 (Phase 5, 설계서 5.4 v1.6).</b> Phase 4에서 판정 없이 열려 있던 수동 resume에 게이트를 붙인다 — 실질
+   * 자격을 회복하지 못한 설계사(제재 진행 중 등)를 수동으로 활성화할 수 없다. 미회복이면 사유 배열을 담은 422다. 자동 resume(reconciler 경로)은 이미
+   * 판정을 통과한 뒤라 이 게이트를 우회하는 것이 정상이다 — reconciler는 도메인 전이({@code lifecycleService.resume})를 직접 부른다.
+   */
   @Transactional
   public void resume(Long agentId, LocalDate eventDt, String rsnTxt) {
+    EligibilityResult result = eligibilityService.evaluate(agentId, lifecycleService.today());
+    if (!result.substantiveEligible()) {
+      List<ErrorDetail> reasons =
+          result.commonReasons().isEmpty()
+              ? List.of(ErrorDetail.of("recruitment", "NO_ELIGIBLE_LINE", "모집 가능한 종목이 없습니다."))
+              : result.commonReasons();
+      throw new BusinessException(AgentErrorCode.RESUME_NOT_ELIGIBLE, reasons);
+    }
     lifecycleService.resume(agentId, eventDt, rsnTxt);
   }
 
@@ -153,6 +180,13 @@ public class AgentService {
   @Transactional(readOnly = true)
   public Agent get(Long agentId) {
     return requireAgent(agentId);
+  }
+
+  /** 모집자격 실시간 판정 (설계서 7.2 {@code GET /agents/{id}/eligibility}). 종목별 결과 + 사유. */
+  @Transactional(readOnly = true)
+  public EligibilityResult eligibility(Long agentId) {
+    requireAgent(agentId);
+    return eligibilityService.evaluate(agentId, lifecycleService.today());
   }
 
   /** 도입 계보 트리 (설계서 7.2 {@code GET /agents/{id}/genealogy}). */

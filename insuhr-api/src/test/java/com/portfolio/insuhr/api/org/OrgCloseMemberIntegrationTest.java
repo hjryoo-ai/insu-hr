@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.portfolio.insuhr.api.agent.AgentService;
 import com.portfolio.insuhr.api.emp.EmployeeService;
 import com.portfolio.insuhr.api.support.AbstractIntegrationTest;
+import com.portfolio.insuhr.api.support.StubRequirementCheckerConfig;
 import com.portfolio.insuhr.api.support.TestSeq;
 import com.portfolio.insuhr.common.exception.BusinessException;
 import com.portfolio.insuhr.domain.agent.Channel;
@@ -23,13 +24,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Import;
 
 /**
  * 조직 폐지 시 소속인원 검사 (설계서 7.2 — 소속인원 존재 시 409).
  *
- * <p>Phase 2에서 TB_EMP가 없어 비워 뒀던 빚을 Phase 3에서 갚는 자리다. TB_AGENT 검사는 Phase 4까지 남으므로, 그 절반은 아래
- * {@code @Disabled} 테스트로 실행 가능한 형태로 남긴다(설계서 13.2 v1.4) — 산문 메모보다 잊기 어렵다.
+ * <p>Phase 2에서 TB_EMP가 없어 비워 뒀던 빚을 Phase 3(임직원)·Phase 4(설계사)에서 갚은 자리다. 설계사 위촉(appoint)의 요건검증은 이
+ * 테스트의 관심이 아니므로 {@link StubRequirementCheckerConfig}로 통과시킨다.
  */
+@Import(StubRequirementCheckerConfig.class)
 class OrgCloseMemberIntegrationTest extends AbstractIntegrationTest {
 
   private static final AtomicInteger SEQ = new AtomicInteger(1);

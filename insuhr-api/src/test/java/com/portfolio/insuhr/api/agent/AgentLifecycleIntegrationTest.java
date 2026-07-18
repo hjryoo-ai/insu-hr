@@ -9,6 +9,7 @@ import com.portfolio.insuhr.api.support.AgentTestConfig;
 import com.portfolio.insuhr.api.support.ConfigurableRequirementChecker;
 import com.portfolio.insuhr.api.support.MutableClock;
 import com.portfolio.insuhr.api.support.RecordingIntegrationRecorder;
+import com.portfolio.insuhr.api.support.StubRequirementCheckerConfig;
 import com.portfolio.insuhr.api.support.TestClockConfig;
 import com.portfolio.insuhr.api.support.TestSeq;
 import com.portfolio.insuhr.common.error.ErrorDetail;
@@ -30,7 +31,6 @@ import com.portfolio.insuhr.domain.person.NewPerson;
 import java.time.LocalDate;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,7 +43,7 @@ import org.springframework.context.annotation.Import;
  * RecordingIntegrationRecorder}로 전이마다 이벤트가 정확히 1건 나가는지 본다. 요건검증은 {@link
  * ConfigurableRequirementChecker}로 좌우한다(시나리오 1a).
  */
-@Import({TestClockConfig.class, AgentTestConfig.class})
+@Import({TestClockConfig.class, AgentTestConfig.class, StubRequirementCheckerConfig.class})
 class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
 
   private static final AtomicInteger SEQ = new AtomicInteger(1);
@@ -98,8 +98,10 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
   }
 
   @Test
-  @DisplayName("정상 생애주기를 끝까지 통과한다: 후보→위촉→활성→정지→해제→해촉")
+  @DisplayName("상태머신 전이를 통과한다: 후보→위촉→활성→정지→해촉")
   void fullLifecycle() {
+    // 요건검증은 스텁(StubRequirementCheckerConfig)이 통과시킨다 — 여기서는 전이 규칙만 본다.
+    // 정지해제(resume)는 실제 모집자격 게이트가 걸리므로 자격 테스트(AgentEligibilityIntegrationTest)에서 다룬다.
     Long org = newOrg();
     AgentService.RegisterResult reg = register(org);
     assertThat(reg.agentCd()).matches("A\\d{8}");
@@ -115,9 +117,7 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
     agentService.suspend(reg.agentId(), LocalDate.of(2026, 4, 1), "EDU_OVERDUE", "보수교육 미이수");
     assertThat(reload(reg.agentId()).getStatus()).isEqualTo(AgentStatus.SUSPENDED);
 
-    agentService.resume(reg.agentId(), LocalDate.of(2026, 4, 10), "교육 이수 완료");
-    assertThat(reload(reg.agentId()).getStatus()).isEqualTo(AgentStatus.ACTIVE);
-
+    // SUSPENDED → TERMINATED (해촉은 정지 상태에서도 가능).
     agentService.terminate(reg.agentId(), LocalDate.of(2026, 5, 1), TermReason.SELF, "자진 해촉");
     assertThat(reload(reg.agentId()).getStatus()).isEqualTo(AgentStatus.TERMINATED);
   }
@@ -283,15 +283,6 @@ class AgentLifecycleIntegrationTest extends AbstractIntegrationTest {
         .hasMessageContaining("이미 설계사로 등록된 인물");
   }
 
-  @Test
-  @Disabled(
-      "Phase 5: eligibility 게이트. 지금 resume은 판정 없이 열려 있다 — 정지 사유(제재+교육미이수)의 다중성을"
-          + " 상태 컬럼 하나로 추적할 수 없어 복귀 조건은 판정 서비스가 도출한다. 이 테스트가 그 빚의 기록이다(설계서 5.3 v1.5).")
-  @DisplayName("정지해제는 모집자격 판정을 통과해야만 허용된다 (Phase 5)")
-  void resumeRequiresEligibilityGate() {
-    // Phase 5에서 RecruitEligibilityService가 생기면:
-    //   제재가 진행 중인 SUSPENDED 설계사의 resume은 거부되어야 한다(판정 FAIL).
-    //   AgentLifecycleService.resume에 판정 게이트를 추가하고 이 @Disabled를 제거한다.
-    throw new UnsupportedOperationException("Phase 5에서 구현");
-  }
+  // Phase 5: resume 판정 게이트의 @Disabled 빚은 해제됐다 — AgentService.resume이 실제 모집자격을 검사하고,
+  // AgentEligibilityIntegrationTest가 "제재 진행 중이면 정지해제 거부, 제재 종료 후 허용"을 검증한다(설계서 5.4 v1.6).
 }

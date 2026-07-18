@@ -182,6 +182,21 @@ public class Agent extends BaseEntity {
     this.orgId = newOrgId;
   }
 
+  /**
+   * 모집자격 판정 결과를 캐시에 반영한다 (설계서 5.4 v1.6).
+   *
+   * <p>{@code RECRUIT_ELIG_YN}은 "마지막 계산 결과"다 — 실시간 판정과 배치가 모두 이 값을 갱신한다. reconciler가 종합 판정이 바뀌었는지
+   * 판단하는 비교 기준이 되므로, 값과 판정 시각을 함께 남긴다.
+   */
+  public void recordEligibility(boolean eligible, Instant checkedAt) {
+    this.recruitEligible = eligible;
+    this.eligCheckedAt = checkedAt;
+  }
+
+  public Instant getEligCheckedAt() {
+    return eligCheckedAt;
+  }
+
   private void requireTransition(AgentStatus target) {
     AgentStatus from = getStatus();
     if (!from.canTransitionTo(target)) {

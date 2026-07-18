@@ -13,8 +13,12 @@ public enum AgentErrorCode implements ErrorCode {
   ORG_CLOSED("AGT-4095", 409, "폐지되었거나 개설 전인 조직에는 소속시킬 수 없습니다."),
   RECRUITER_CYCLE("AGT-4096", 409, "도입자 지정이 계보에 순환을 만듭니다."),
 
+  EDU_HOURS_INSUFFICIENT("AGT-4002", 400, "교육 이수시간이 최소 기준에 미달합니다."),
+
   /** 설계서 5.3/7.3 — 위촉 요건 미충족은 예외 하나가 아니라 사유 배열을 담은 422다. */
-  REQUIREMENT_NOT_MET("AGT-4221", 422, "위촉 요건이 충족되지 않았습니다.");
+  REQUIREMENT_NOT_MET("AGT-4221", 422, "위촉 요건이 충족되지 않았습니다."),
+  /** 설계서 5.4 v1.6 — 모집자격 미회복 상태에서 정지해제 시도. 사유 배열 동반 422 */
+  RESUME_NOT_ELIGIBLE("AGT-4222", 422, "모집자격이 회복되지 않아 정지해제할 수 없습니다.");
 
   private final String code;
   private final int httpStatus;
