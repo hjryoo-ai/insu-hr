@@ -4,6 +4,12 @@ dependencies {
     api(project(":insuhr-common"))
     api("org.springframework.boot:spring-boot-starter-data-jpa")
 
+    // OutboxIntegrationRecorder(domain)가 Jackson 3 ObjectMapper 빈을 요구한다. Boot 4는 자동설정을
+    // 기술별 모듈로 쪼갰으므로(설계서 3.0) ObjectMapper 빈은 spring-boot-jackson이 만든다 — api/relay는
+    // web 스타터로 이걸 물지만 batch는 web이 없어 빈이 없었다. 필요가 시작되는 domain이 api로 물어
+    // 모든 실행 모듈(4번째가 생겨도)이 자동으로 빈을 갖게 한다(jpa-common.yml과 같은 "구조로 강제").
+    api("org.springframework.boot:spring-boot-jackson")
+
     // BCrypt(PasswordEncoder)는 spring-security-crypto를 요구하므로 insuhr-common(의존성 0)에
     // 둘 수 없다. 설계서 13.2 Phase 1의 배치 기준 — JDK 내장 JCA로 되는 것만 common에.
     //

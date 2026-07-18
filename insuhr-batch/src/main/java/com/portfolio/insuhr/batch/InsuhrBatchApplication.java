@@ -8,9 +8,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 /**
  * 실행 모듈 2: 배치 서버 (설계서 8장).
  *
- * <p>실행: {@code java -jar insuhr-batch.jar --job.name={잡명} [--targetDate=yyyy-MM-dd]}
- *
- * <p>Phase 0에서는 골격만. 잡 10종은 Phase 7에서 구현한다.
+ * <p>실행: {@code java -jar insuhr-batch.jar --spring.batch.job.name={잡명} [targetDate=yyyy-MM-dd]} —
+ * 잡 선택은 옵션 인자, {@code targetDate}는 비옵션 잡 파라미터다(설계서 3.0/8 v2.0).
  */
 @SpringBootApplication(scanBasePackages = "com.portfolio.insuhr")
 @EntityScan("com.portfolio.insuhr")

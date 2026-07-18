@@ -54,16 +54,29 @@ public class AgentEligibilityReconciler {
   /** 오늘 기준으로 한 설계사의 자격을 재판정하고 상태·캐시·이벤트를 정합화한다. */
   @Transactional
   public EligibilityResult reconcile(Long agentId) {
-    LocalDate today = LocalDate.now(clock);
-    EligibilityResult result = eligibilityService.evaluate(agentId, today);
+    return reconcileAsOf(agentId, LocalDate.now(clock));
+  }
+
+  /**
+   * 지정한 기준일({@code asOf})로 재판정·정합화한다. 배치({@code eligibilityRefreshJob})는 시스템 날짜를 직접 읽지 않고 {@code
+   * targetDate}를 이 인자로 넘긴다 — 6.2 앵커 Clock 규약을 배치까지 관통시키고, "같은 {@code targetDate} 재실행 = 같은 결과"라는
+   * 멱등성을 성립시킨다({@link com.portfolio.insuhr.domain.emp.AppointmentApplyService#recalculateAsOf}과 같은
+   * 패턴).
+   *
+   * <p>기준일은 판정·전이의 <b>업무 날짜</b>에만 쓴다. "마지막 계산 시각"은 규약대로 실제 실행 시각 {@code Instant.now(clock)}이며
+   * (§6.2), 재실행 간 값이 달라지지만 그것은 메타 타임스탬프일 뿐 판정 결과(전이·YN)는 {@code asOf}에만 의존하므로 멱등하다.
+   */
+  @Transactional
+  public EligibilityResult reconcileAsOf(Long agentId, LocalDate asOf) {
+    EligibilityResult result = eligibilityService.evaluate(agentId, asOf);
 
     Agent agent = require(agentId);
 
     // ① 자동 전이 (ACTIVE↔SUSPENDED). 판정 함수는 상태를 안 바꾸므로 여기서만 상태가 움직인다.
     if (agent.getStatus() == AgentStatus.ACTIVE && !result.substantiveEligible()) {
-      lifecycleService.suspend(agentId, today, "ELIG_FAIL", reasonText(result));
+      lifecycleService.suspend(agentId, asOf, "ELIG_FAIL", reasonText(result));
     } else if (agent.getStatus() == AgentStatus.SUSPENDED && result.substantiveEligible()) {
-      lifecycleService.resume(agentId, today, "모집자격 회복(자동)");
+      lifecycleService.resume(agentId, asOf, "모집자격 회복(자동)");
     }
 
     // ② 종합 판정 갱신. 종합 YN = 실질 자격 AND 상태 ACTIVE (설계서 5.4 v1.6).

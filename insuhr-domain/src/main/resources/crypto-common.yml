@@ -1,0 +1,16 @@
+# 암호화 공통 설정 — AES 키·pepper를 쓰는 모든 실행 모듈(api·batch·relay)이 공유한다.
+#
+# 여기 있는 이유(설계서 3.0 v2.0, jpa-common.yml과 같은 원칙): domain의 AesGcmCipher/IfSubscriberService가
+# 이 값을 요구하므로 domain을 스캔하는 모든 실행 모듈에 필요하다. api·relay 두 곳에 같은 블록이 복제돼
+# 있었고 batch에는 빠져 있었다(batch 잡은 복호화를 안 쓰지만 IfSubscriberService 빈 배선에 필요) —
+# 세 번째 복제 대신 필요가 시작되는 domain에 두고 import로 끌어와 드리프트를 구조로 막는다.
+#
+# 키·pepper는 환경변수/외부 시크릿(운영 가정: KMS/Vault)에서 주입한다(10.3). 아래 기본값은 로컬 개발 전용이며
+# 운영에 그대로 쓰면 안 된다. 키 회전(10.3): current-key-version을 v2로 올리고 keys에 v2를 추가하되 v1은
+# 남긴다 — 과거 암호문 복호화에 계속 필요하다.
+insuhr:
+  crypto:
+    current-key-version: ${INSUHR_AES_CURRENT_KEY_VERSION:v1}
+    keys:
+      v1: ${INSUHR_AES_KEY_V1:bG9jYWwtZGV2LW9ubHkta2V5LTMyYnl0ZXMtMDAwMDA=}
+    pepper: ${INSUHR_RRN_PEPPER:local-dev-only-pepper-do-not-use-in-production}

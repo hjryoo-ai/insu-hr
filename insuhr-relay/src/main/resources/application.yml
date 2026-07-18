@@ -2,24 +2,18 @@ spring:
   application:
     name: insuhr-relay
 
+  # 공통 설정은 domain이 소유한다(설계서 3.0 v2.0): jpa-common(ddl-auto=validate, ORA-18716 회피),
+  # crypto-common(AES 키·pepper — 릴레이는 구독자 SECRET_ENC 복호화에 쓴다).
+  config:
+    import:
+      - "classpath:jpa-common.yml"
+      - "classpath:crypto-common.yml"
+
   datasource:
     url: ${INSUHR_DB_URL:jdbc:oracle:thin:@localhost:1521/FREEPDB1}
     username: ${INSUHR_DB_USER:insuhr}
     password: ${INSUHR_DB_PASSWORD:insuhr}
     driver-class-name: oracle.jdbc.OracleDriver
-
-  jpa:
-    hibernate:
-      ddl-auto: validate
-    open-in-view: false
-    properties:
-      hibernate:
-        type:
-          # 감사 컬럼(6.2)은 존 없는 TIMESTAMP. Hibernate 7 기본(TIMESTAMP_UTC)은 Instant를
-          # TIMESTAMP WITH TIME ZONE으로 다뤄 읽을 때 ORA-18716이 난다 — JPA를 쓰는 모든 모듈 공통(3.0).
-          preferred_instant_jdbc_type: TIMESTAMP
-        jdbc:
-          time_zone: UTC
 
   # 마이그레이션 주체는 api 하나. validate 전용으로 켜둔다 (설계서 4.2)
   flyway:
@@ -29,13 +23,8 @@ insuhr:
   flyway:
     mode: validate
 
-  # 릴레이는 구독자 SECRET_ENC를 복호화해 HMAC 키로 쓴다 — api와 같은 키를 주입해야 한다(설계서 10.3).
-  # 아래 기본값은 로컬 개발 전용. 운영은 api와 동일한 KMS/Vault 키를 환경변수로 넣는다.
-  crypto:
-    current-key-version: ${INSUHR_AES_CURRENT_KEY_VERSION:v1}
-    keys:
-      v1: ${INSUHR_AES_KEY_V1:bG9jYWwtZGV2LW9ubHkta2V5LTMyYnl0ZXMtMDAwMDA=}
-    pepper: ${INSUHR_RRN_PEPPER:local-dev-only-pepper-do-not-use-in-production}
+  # insuhr.crypto(AES 키·pepper)는 domain의 crypto-common.yml이 소유한다(위 config.import). 릴레이는
+  # 구독자 SECRET_ENC를 복호화해 HMAC 키로 쓰며 api와 동일한 키를 주입받아야 한다(설계서 3.0 v2.0, 10.3).
 
   # 릴레이 운영 파라미터(재시도 한도는 정책값 OUTBOX_MAX_RETRY에서 읽는다).
   relay:

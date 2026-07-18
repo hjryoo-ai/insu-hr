@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~6 완료** (2026-07-18). `./gradlew build` 그린, 테스트 150개(`@Disabled` 0). 마이그레이션 V1~V13.
+**Phase 0~6 완료 + Phase 7 완료 기준 그린** (2026-07-18). `./gradlew build` 그린, 테스트 154개(`@Disabled` 0). 마이그레이션 V1~V14.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
@@ -15,17 +15,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Phase 6: 연계 3계층 — `IntegrationRecorder` 실구현(ChangeLog+Outbox, `NoOpIntegrationRecorder` 삭제), insuhr-relay 2단계 폴러, Pull API, 구독자 관리(V13). **팬아웃 = 릴레이 픽업 시점의 활성 구독자×TOPIC_FILTER**(recorder 아님) → `TB_IF_DELIVERY`(이벤트×구독자), Outbox `READY→FANNED_OUT→SENT`는 요약. 팬아웃은 `JdbcClient` `INSERT ... SELECT ... WHERE NOT EXISTS` 한 문장(§4.3 쓰기 예외 — rollback-only 함정 회피). **순서 게이트는 (구독자, aggId) 단위** 종결집합 {SENT,SKIPPED}, 선행 {PENDING,FAILED}면 후행 보류. 구독자 0명=즉시 SENT, 비활성 구독자 미전송분=SKIPPED로 요약 수렴(**단일 릴레이 인스턴스 가정**). 서명 = `HMAC-SHA256(timestamp + "." + body)`(전송 바이트 그대로 + 타임스탬프로 리플레이 방어), 백오프는 `NEXT_RETRY_AT` 영속화(Phase 7 재사용). Pull은 워터마크 지연(`SYNC_WATERMARK_SECONDS`)으로 시퀀스 갭 함정 방어. 완료 기준 전부 그린: WireMock 시나리오 5, 동일 aggId 순서(실패→보류→재시도→전송), 구독자 격리+비활성 SKIPPED 수렴, 기록 실패=업무 롤백, 페이로드 민감정보 부재
 
-다음은 설계서 §13.2의 **Phase 7 — 배치**: 8장 잡 10종(`eligibilityRefreshJob`·`futureAppointApplyJob`·`outboxRetryJob`·`hrSnapshotFile` 등). 완료 기준은 시나리오 2 + 6b(배치 래퍼+멱등).
+- Phase 7: 배치(V14 = Batch 6 메타테이블, Flyway 소유 — Boot 4는 자동 생성 안 함). **완료 기준 3잡 그린**: `eligibilityRefreshJob`(시나리오 2 — 쓰기 없이 날짜 경계 넘는 자격 전이의 유일한 포착자, Reader가 ID 페이징·Processor가 기존 reconciler 호출), `futureAppointApplyJob`(시나리오 6b — `AppointmentApplyService` 감싸기, 멱등), `hrSnapshotFileJob`(CSV+트레일러+SHA-256 체크섬). **잡은 시스템 날짜 안 읽고 `targetDate`를 `asOf`로 도메인에 주입**(앵커 Clock이 배치까지 관통), 파라미터는 `#{stepExecution}`로 읽음(지연바인딩 `#{jobParameters[..]}`는 Batch 6에서 null). **`RunIdIncrementer` 미사용**(인크리멘터+업무 파라미터 비호환) — 호출자 유니크 `run.id`로 재실행. Batch 6 API 실측은 설계서 §3.0 표. 공통설정 구조화: `jpa-common.yml`·`crypto-common.yml`(domain 소유, import) + `spring-boot-jackson`을 domain이 `api`로 물어 web 없는 batch에도 `ObjectMapper` 공급
 
-Phase 7+에서 갚아야 할 것:
-- **Phase 7 `futureAppointApplyJob`** — `AppointmentApplyService`를 **감싸기만** 한다(반영 규칙 재구현 금지). 시나리오 6b(배치 래퍼+멱등)가 여기서 완결
-- **Phase 7 `outboxRetryJob`** — `TB_IF_DELIVERY.NEXT_RETRY_AT <= 현재`인 FAILED/PENDING을 다시 태운다(릴레이가 쓴 컬럼을 그대로 읽음, §9.2)
-- **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4)
+잡은 restart를 의도적으로 안 쓴다 — 매 실행이 새 JobInstance라 실패 시 처음부터 재실행하며, 재계산 멱등(5.5)이 그 전제(§8 v2.0).
+
+**`phase-7` 태그는 보류** — 완료 기준은 그린이지만 §8 잡 로스터 6종이 남아 태그 의미가 갈리지 않게 후속 세션으로 미룬다(사용자 결정). **남은 6잡**(`guaranteeExpiry`·`continuingEduNotice`·`licenseValidity`·`dataQuality`·`annualLeaveGrant`·`outboxDlqSweep`)은 **V15 출력 테이블 신설이 선행**: 범용 `TB_NOTICE_QUEUE`(`UQ(NOTICE_TYPE,TARGET_ID,DUE_DT,MILESTONE)`로 재실행 멱등 — `INSERT…WHERE NOT EXISTS`+행 생성 시에만 `notice.created`, futureAppoint 패턴 재사용) + `TB_DQ_FINDING`(리포트). §8이 참조하던 "알림 대기 테이블"이 §6.3 목록에 없던 누락을 이 설계로 보강. `dataQualityJob`은 Phase 8→Phase 7 후속으로 이동. 후속 완료 기준: V15 + 6잡 + dedup 키 멱등 테스트 + 알림 조건부 발행.
+
+Phase 8에서 갚아야 할 것:
+- **Phase 8 `privacyPurgeJob`** — 대상 두 종류: 보존기간 경과 인물 + **역할 없는 인물**(설계서 5.2 v1.4). 익명화는 `person.anonymized` 발행(§8 v2.0)
 - **Phase 8 Kafka 발행** — relay의 `EventPublisher` 포트에 kafka 프로파일 구현 추가(설계서 v1.6에서 Phase 8로 미룸). 계좌 복호화 엔드포인트(§7.2 백로그)도 여기
 
 ## 단일 사양(SSOT)
 
-`insuhr-design-spec.md`(현재 **v1.6**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
+`insuhr-design-spec.md`(현재 **v2.0**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
 설계서와 다르게 구현해야 할 이유가 있으면 임의로 벗어나지 말고 사용자에게 먼저 알린다.
 
 **설계서가 현실과 어긋나는 것을 발견하면 CLAUDE.md나 코드 주석에만 우회 기록을 남기지 말고 설계서 본문을 개정하고 말미의 개정 이력에 남긴다.** 그렇게 하지 않으면 다음 세션이 "설계서 우선" 규칙을 근거로 정정을 되돌린다. 이 파일에는 결론만 두고 근거·상세는 설계서에 둔다.
@@ -53,7 +55,7 @@ docker compose --profile kafka up -d # Kafka는 선택 프로파일에서만
 ./gradlew :insuhr-api:bootRun        # API 서버 → http://localhost:8080/actuator/health
 ./gradlew spotlessApply              # google-java-format. build 전에 돌릴 것 — spotlessCheck가 build를 깬다
 ./gradlew :insuhr-domain:test --tests '*AgentLifecycleServiceTest*'   # 단일 테스트
-java -jar insuhr-batch/build/libs/insuhr-batch-0.0.1-SNAPSHOT.jar --job.name=eligibilityRefreshJob --targetDate=2026-07-17
+java -jar insuhr-batch/build/libs/insuhr-batch-0.0.1-SNAPSHOT.jar --spring.batch.job.name=eligibilityRefreshJob targetDate=2026-07-17 run.id=1
 
 # DB 직접 확인
 docker exec -it insuhr-oracle sqlplus insuhr/insuhr@localhost:1521/FREEPDB1
