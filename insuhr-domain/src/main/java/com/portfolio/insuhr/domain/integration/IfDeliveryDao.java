@@ -112,9 +112,10 @@ public class IfDeliveryDao {
                    o.EVENT_UUID    AS eventUuid,
                    o.EVENT_TYPE    AS eventType,
                    o.PAYLOAD       AS payload,
-                   s.SYSTEM_CD     AS systemCd,
-                   s.ENDPOINT_URL  AS endpointUrl,
-                   s.SECRET_ENC    AS secretEnc
+                   s.SYSTEM_CD        AS systemCd,
+                   s.ENDPOINT_URL     AS endpointUrl,
+                   s.SECRET_ENC       AS secretEnc,
+                   s.DELIVERY_TYPE_CD AS deliveryTypeCd
               FROM TB_IF_DELIVERY d
               JOIN TB_IF_OUTBOX o     ON o.EVENT_ID = d.EVENT_ID
               JOIN TB_IF_SUBSCRIBER s ON s.SUBSCRIBER_ID = d.SUBSCRIBER_ID
@@ -291,7 +292,7 @@ public class IfDeliveryDao {
   /** 팬아웃 대상 READY 이벤트. */
   public record ReadyEvent(long eventId, String aggType, long aggId, String eventType) {}
 
-  /** 전송 대상 전달 레코드(+발송에 필요한 이벤트·구독자 정보). */
+  /** 전송 대상 전달 레코드(+발송에 필요한 이벤트·구독자 정보). {@code deliveryTypeCd}로 퍼블리셔를 고른다(WEBHOOK/KAFKA). */
   public record PendingDelivery(
       long deliveryId,
       long eventId,
@@ -304,5 +305,6 @@ public class IfDeliveryDao {
       String payload,
       String systemCd,
       String endpointUrl,
-      String secretEnc) {}
+      String secretEnc,
+      String deliveryTypeCd) {}
 }

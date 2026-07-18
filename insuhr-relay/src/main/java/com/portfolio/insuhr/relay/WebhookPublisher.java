@@ -24,7 +24,7 @@ import org.springframework.web.client.RestClientException;
  * <p>서명 타임스탬프는 앱 시계({@code Instant.now(clock)})로 찍는다 — 절대시각이라 존 무관(6.2). 수신측이 스큐 창 밖이면 거절한다.
  */
 @Component
-public class WebhookPublisher {
+public class WebhookPublisher implements EventPublisher {
 
   static final String HEADER_SIGNATURE = "X-InsuHR-Signature";
   static final String HEADER_TIMESTAMP = "X-InsuHR-Timestamp";
@@ -40,6 +40,12 @@ public class WebhookPublisher {
     this.clock = clock;
   }
 
+  @Override
+  public String deliveryType() {
+    return "WEBHOOK";
+  }
+
+  @Override
   public PublishResult publish(PendingDelivery delivery) {
     String timestamp = Instant.now(clock).toString();
     String body = delivery.payload();
