@@ -857,6 +857,7 @@ CREATE INDEX IX_OUTBOX_STATUS ON TB_IF_OUTBOX(STATUS_CD, EVENT_ID);
 | GET/POST | /agents/{agentId}/missell-cases | 불완전판매 건 관리 |
 | GET/POST | /agents/{agentId}/cross-sell-registrations | 교차모집 등록 |
 | GET | /agents/{agentId}/contracts, POST 동일 | 위촉계약/지급계좌 관리 |
+| POST | /agents/{agentId}/contracts/{contractId}/account | **백로그 (v1.6)** — 지급계좌 복호화 조회. `agent.account.decrypt` 권한 + 사유 본문(POST+사유 일반 규칙, 7.1). 이벤트·스냅샷은 계좌를 싣지 않으므로(9.3, 민감정보 부재 테스트) 수수료시스템이 계좌를 얻는 **유일한 경로**가 이 엔드포인트다. 미구현이면 "이벤트에도 API에도 없는" 데이터가 된다. 구현 시 `TB_PRIVACY_ACCESS_LOG` 기록 |
 | GET | /agents/{agentId}/genealogy | 도입 계보 트리 (재귀: CONNECT BY 또는 재귀 CTE) |
 
 **연계 (IFC)** — 시스템 계정 전용
@@ -963,7 +964,18 @@ POST /api/v1/agents/1024/appoint
 - **at-least-once, exactly-once 아님.** 전송 성공 후 SENT 마킹 전에 릴레이가 죽으면 재기동 후 같은 이벤트를 또 보낸다. 이것이 **계약**이다 — 수신측은 `eventUuid` 멱등으로 중복을 흡수한다. exactly-once를 흉내 내려 하지 않는다.
 - **순서 보장은 상태 조회만으로 부족하다.** READY를 EVENT_ID 순으로 집더라도, aggX의 이벤트 N이 FAILED로 재시도 대기 중일 때 N+1을 먼저 보내면 순서가 깨진다. 릴레이 조회에 **"같은 `aggType+aggId`에 미전송(READY/FAILED) 선행 이벤트가 있으면 후행은 집지 않는다"** 게이트를 넣는다(같은 aggId는 직렬, 다른 aggId는 병렬). 실패→후행 보류→재시도 성공→후행 전송 순서를 WireMock으로 검증한다.
 - **서명에 타임스탬프를 포함해 리플레이를 막는다.** `X-InsuHR-Signature: HMAC-SHA256(timestamp + "." + body, secret)` + `X-InsuHR-Timestamp` 헤더. 수신측은 타임스탬프 시간창 밖이면 거절한다. 서명이 본문만 덮으면 캡처된 요청을 무한 재생할 수 있다.
-- **재시도**: 비2xx·타임아웃은 실패. 지수 백오프로 `RETRY_CNT`를 늘리며 재시도하고, 한도(정책값) 초과 시 `FAILED` + `POST /admin/outbox/{eventId}/resend` 수동 재전송. 전송 시도마다 `TB_IF_SEND_LOG` 1행(성공·실패 모두).
+- **재시도**: 비2xx·타임아웃은 실패. 지수 백오프로 `RETRY_CNT`를 늘리며 재시도하고, 한도(정책값 `OUTBOX_MAX_RETRY`) 초과 시 `FAILED` + `POST /admin/outbox/{eventId}/resend` 수동 재전송. 전송 시도마다 `TB_IF_SEND_LOG` 1행(성공·실패 모두).
+
+**relay 구현 설계 (v1.6 — Phase 6 리뷰). 이 절이 릴레이 세션의 진입 설계다.**
+
+- **다중 구독자 팬아웃 — 단일 `STATUS_CD`로는 부족하다.** 구독자 A 성공·B 실패면 이벤트 상태가 정의 불가다. 발행 시 매칭 구독자별 **전달 레코드**로 팬아웃한다(새 표 `TB_IF_DELIVERY`: `EVENT_ID, SYSTEM_CD, STATUS(PENDING/SENT/FAILED), RETRY_CNT, NEXT_RETRY_AT`). 이벤트×구독자 단위로 상태를 갖고, `TB_IF_OUTBOX.STATUS_CD`는 요약으로 강등한다(전 구독자 SENT 시 SENT). `TB_IF_DELIVERY`는 아직 태그 안 된 V13에 추가한다(같은 Phase, ALTER 불필요).
+- **순서 게이트는 (구독자, aggId) 단위.** 죽은 구독자 하나가 다른 구독자의 전달을 막지 않는다. 특정 구독자에게 aggX의 이벤트 N이 미전송이면, 그 구독자에게 N+1을 보류할 뿐 다른 구독자·다른 aggId는 흐른다. **구독자 격리**를 WireMock 테스트로 검증하고 완료 기준에 넣는다.
+- **SKIP LOCKED와 게이트의 상호작용.** "선행 미전송 존재" 검사는 잠금과 무관한 일반 조회여야 한다 — 다른 워커가 잠근 선행 행도 "미전송"으로 보여야 후행이 보류돼 순서가 지켜진다. 포트폴리오는 **단일 릴레이 인스턴스**를 가정한다. 스케일아웃하려면 aggId 해시로 파티셔닝해 같은 aggId를 한 워커가 처리하는 것이 전제다.
+- **서명은 전송 바이트 그대로.** 직렬화를 한 번만 하고 그 바이트를 서명·전송한다(서명용 재직렬화는 바이트가 달라질 수 있다). 서명 입력 = `timestamp + "." + body`, 헤더 `X-InsuHR-Timestamp`. 수신측은 타임스탬프 스큐(정책값) 밖이면 거절 — 여기까지가 리플레이 방어다.
+- **백오프는 `NEXT_RETRY_AT` 컬럼으로 영속화.** 인메모리 대기면 재기동 시 백오프가 리셋된다. 컬럼으로 두면 Phase 7 `outboxRetryJob`이 같은 필드(`NEXT_RETRY_AT <= 현재`)를 읽어 자연히 이어진다.
+- **워터마크·기간 비교는 DB 시계로.** 컬럼이 UTC 규약(6.2)이니 비교도 `SYS_EXTRACT_UTC(SYSTIMESTAMP) - INTERVAL '5' SECOND`처럼 DB 시계 기준으로 한다. 앱 시계와 섞으면 지연 창이 흔들린다.
+- **기록 실패 = 업무 롤백.** recorder가 호출자 트랜잭션에서 쓰므로, Outbox/ChangeLog INSERT가 실패하면 업무 변경도 함께 롤백돼야 한다(기록 없으면 변경 없음 — 10.1.1 접근로그와 같은 방향). 트랜잭셔널 아웃박스의 존재 이유이며, recorder 실패를 주입해 업무 행이 롤백됨을 단언하는 테스트로 못박는다.
+- **Pull·스냅샷 API 통제**: `sync.export` 권한 + 대량 접근로그(10.2). 사외로 전수 데이터가 나가는 경로다.
 
 ### 9.3 표준 이벤트 카탈로그
 
@@ -1220,7 +1232,7 @@ GET /api/v1/sync/changes?aggType=AGENT&cursor=182734&size=500
 
 **Phase 6 — 연계**
 - IntegrationRecorder(ChangeLog+Outbox), insuhr-relay(웹훅+서명+재시도), Pull API, 구독자 관리
-- 완료 기준: WireMock 수신 검증, 시나리오 5 통과, 동일 aggId 순서 보장 테스트, 페이로드 민감정보 부재 테스트
+- 완료 기준: WireMock 수신 검증, 시나리오 5 통과, 동일 aggId 순서 보장(실패→보류→재시도→전송), **구독자 격리**(죽은 구독자가 남을 안 막음), **기록 실패 시 업무 롤백**, 페이로드 민감정보 부재 테스트
 - ⚠️ 페이로드 직렬화는 Jackson 3(`tools.jackson`) 기준 — 9.2 직렬화 항목 참조
 - **진입 전 확정된 결정 (v1.6)** — 근거는 9.1·9.2·9.4에, 여기엔 목록만
   - **Jackson 3 `JsonMapper`**를 domain의 recorder 실구현에서 쓴다(common은 여전히 0의존성). jjwt-gson과 격리 공존. 페이로드는 9.3 스키마 + `schemaVersion=1`
