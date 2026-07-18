@@ -61,6 +61,34 @@ CREATE TABLE TB_IF_SUBSCRIBER (
 );
 COMMENT ON TABLE TB_IF_SUBSCRIBER IS '구독 시스템. TOPIC_FILTER로 관심 이벤트만 전송 (설계서 6.5)';
 
+-- 전달 레코드 — 이벤트 × 구독자 단위 상태 (설계서 9.2 v1.7).
+-- 릴레이는 2단계다: ① 팬아웃 — Outbox를 EVENT_ID 순으로 소비해 그 시점 활성 구독자(TOPIC_FILTER 매칭)별로 이 레코드를
+-- 만든다(백필 아님 — 신규 구독자는 활성 이후 이벤트만 받는다) ② 전달 — 구독자별로 자기 레코드만 순서대로 보낸다.
+-- 순서 게이트는 "같은 (구독자, aggType+aggId)에 미전송 선행 레코드가 있으면 후행 보류"로 단순해진다(Outbox 조인 불요).
+-- Outbox.STATUS_CD는 이 레코드들의 요약 — 전 레코드가 SENT 또는 SKIPPED면 SENT.
+CREATE TABLE TB_IF_DELIVERY (
+    DELIVERY_ID   NUMBER GENERATED AS IDENTITY PRIMARY KEY,
+    EVENT_ID      NUMBER        NOT NULL,          -- 전달 대상 아웃박스 이벤트
+    SUBSCRIBER_ID NUMBER        NOT NULL,          -- 수신 구독자
+    AGG_TYPE      VARCHAR2(30)  NOT NULL,          -- 순서 게이트용 비정규화(Outbox 조인 없이 판정)
+    AGG_ID        NUMBER        NOT NULL,
+    STATUS_CD     VARCHAR2(10)  DEFAULT 'PENDING' NOT NULL, -- PENDING/SENT/FAILED/SKIPPED
+    RETRY_CNT     NUMBER(3)     DEFAULT 0 NOT NULL,
+    NEXT_RETRY_AT TIMESTAMP     DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP) NOT NULL, -- 픽업 시각(백오프 영속화, Phase 7 재사용)
+    LAST_ERROR    VARCHAR2(1000),
+    SENT_AT       TIMESTAMP,
+    CREATED_AT    TIMESTAMP     DEFAULT SYS_EXTRACT_UTC(SYSTIMESTAMP) NOT NULL,
+    CONSTRAINT UQ_DELIVERY_EVENT_SUB UNIQUE (EVENT_ID, SUBSCRIBER_ID),  -- 이벤트×구독자 1행(팬아웃 재실행 멱등)
+    CONSTRAINT FK_DELIVERY_EVENT FOREIGN KEY (EVENT_ID) REFERENCES TB_IF_OUTBOX(EVENT_ID),
+    CONSTRAINT FK_DELIVERY_SUB FOREIGN KEY (SUBSCRIBER_ID) REFERENCES TB_IF_SUBSCRIBER(SUBSCRIBER_ID),
+    CONSTRAINT CK_DELIVERY_STATUS CHECK (STATUS_CD IN ('PENDING', 'SENT', 'FAILED', 'SKIPPED'))
+);
+COMMENT ON TABLE TB_IF_DELIVERY IS '이벤트×구독자 전달 상태. Outbox STATUS_CD는 이 레코드들의 요약 (설계서 9.2 v1.7)';
+-- 전달 단계 픽업: 특정 구독자의 재시도 시각 도달한 PENDING을 집는 경로(폴링 루프 최다 실행 SQL).
+CREATE INDEX IX_DELIVERY_PICKUP ON TB_IF_DELIVERY(SUBSCRIBER_ID, STATUS_CD, NEXT_RETRY_AT);
+-- 순서 게이트: 같은 (구독자, aggType+aggId)에 미전송 선행이 있는가를 싸게 판정하는 경로.
+CREATE INDEX IX_DELIVERY_GATE ON TB_IF_DELIVERY(SUBSCRIBER_ID, AGG_TYPE, AGG_ID, DELIVERY_ID);
+
 -- 전송 이력. 전송 시도마다 1행(성공·실패 모두, 설계서 9.2 v1.6).
 CREATE TABLE TB_IF_SEND_LOG (
     SEND_LOG_ID   NUMBER GENERATED AS IDENTITY PRIMARY KEY,
