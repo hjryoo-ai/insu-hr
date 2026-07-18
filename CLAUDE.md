@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 저장소 현재 상태
 
-**Phase 0~8 완료 (v1.0 릴리스)** (2026-07-18). `./gradlew build` 그린, 테스트 168개(`@Disabled` 0). 마이그레이션 V1~V17.
+**Phase 0~8 완료 (v1.0 릴리스)** (2026-07-18). `./gradlew build` 그린, 테스트 168개(`@Disabled` 0). 마이그레이션 V1~V17. **v1.1 백로그(서열)는 설계서 §13.4** — 변경감사 AOP·비밀번호 변경 집행·Pull 소비자 계약 테스트·릴레이 스케일아웃. 릴리스 후 규율: 코드/설정 변경=`v1.0.x`, 문서만=태그 없음, `v1.0` 태그 불변.
 
 - Phase 0: 멀티모듈 골격 5종, docker-compose, 공통 응답/예외/에러코드, BaseEntity+Auditing, Spotless, Testcontainers
 - Phase 1: 공통코드+부록 A 시드(V2), 정책값(V3), 계정/역할/권한+Refresh 토큰(V4), UTC 규약(V5), AES-GCM·해시·마스킹 유틸, JWT 인증, Security 7 RBAC
@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 단일 사양(SSOT)
 
-`insuhr-design-spec.md`(현재 **v2.2**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
+`insuhr-design-spec.md`(현재 **v2.3**)가 이 프로젝트의 유일한 사양이다. 코드/판단이 설계서와 충돌하면 **설계서가 우선**한다.
 설계서와 다르게 구현해야 할 이유가 있으면 임의로 벗어나지 말고 사용자에게 먼저 알린다.
 
 **설계서가 현실과 어긋나는 것을 발견하면 CLAUDE.md나 코드 주석에만 우회 기록을 남기지 말고 설계서 본문을 개정하고 말미의 개정 이력에 남긴다.** 그렇게 하지 않으면 다음 세션이 "설계서 우선" 규칙을 근거로 정정을 되돌린다. 이 파일에는 결론만 두고 근거·상세는 설계서에 둔다.

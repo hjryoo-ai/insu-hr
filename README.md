@@ -1,6 +1,6 @@
 # InsuHR — 보험사 통합 인사관리시스템
 
-임직원과 설계사(FC)를 **하나의 인물 모델** 위에서 통합 관리하고, 인사 기준정보의 변경을 **이벤트 · Pull API · 배치 파일 3계층**으로 타 시스템에 동기화하는 백엔드 시스템입니다. 설계서를 먼저 쓰고, 구현 과정의 실증으로 설계서를 교정해 가며(v1.0 → v2.2) 완성한 포트폴리오 프로젝트입니다.
+임직원과 설계사(FC)를 **하나의 인물 모델** 위에서 통합 관리하고, 인사 기준정보의 변경을 **이벤트 · Pull API · 배치 파일 3계층**으로 타 시스템에 동기화하는 백엔드 시스템입니다. 설계서를 먼저 쓰고, 구현 과정의 실증으로 설계서를 교정해 가며(v1.0 → v2.3) 완성한 포트폴리오 프로젝트입니다.
 
 `Java 21 LTS` · `Spring Boot 4.1` · `Oracle 23ai` · `Spring Batch 6` · `Flyway V1~V17` · **테스트 168개 (실 Oracle Testcontainers)** · `@Disabled 0`
 
@@ -66,7 +66,7 @@ docker compose up -d oracle          # Oracle 23ai Free — Flyway가 스키마 
 
 ## 설계서와 개정 이력 — 이 프로젝트의 실제 산출물
 
-전체 설계는 [insuhr-design-spec.md](./insuhr-design-spec.md) (v2.2, 13장 + 부록) 하나로 관리했고, **구현 실증이 설계서와 충돌할 때마다 설계서를 고쳤습니다.** 개정 이력에서 대표적인 것들:
+전체 설계는 [insuhr-design-spec.md](./insuhr-design-spec.md) (v2.3, 13장 + 부록) 하나로 관리했고, **구현 실증이 설계서와 충돌할 때마다 설계서를 고쳤습니다.** 개정 이력에서 대표적인 것들:
 
 | 개정 | 실증 내용 |
 |---|---|
@@ -85,6 +85,8 @@ docker compose up -d oracle          # Oracle 23ai Free — Flyway가 스키마 
 3. **프레임워크가 파라미터를 조용히 버림** — Spring Batch 6의 incrementer + 업무 파라미터 조합. 다른 테스트들은 targetDate가 "우연히 오늘"이라 통과 중이었음 → 날짜 고정 테스트가 검출
 
 ## v1.1 백로그 (우선순위)
+
+의도적으로 v1.0에서 뺀 것들 — 설계서 [§13.4](./insuhr-design-spec.md#134-v11-백로그-릴리스-후-우선순위)에 같은 순서로 근거와 함께 있습니다.
 
 1. 변경감사 AOP + `TB_AUDIT_LOG` — 설계서 [§10.4](./insuhr-design-spec.md)에 의도적 지연으로 문서화. 구현 시 TB_PERSON 민감필드를 감사 JSON에서 소스 제외(파기 정합성 전제)
 2. `PUT /auth/password` + 비밀번호 이력·90일 변경 집행 (정책값은 시드 완료, 엔드포인트 미구현)
