@@ -94,7 +94,3 @@ docker compose up -d oracle          # Oracle 23ai Free — Flyway가 스키마 
 2. `PUT /auth/password` + 비밀번호 이력·90일 변경 집행 (정책값은 시드 완료, 엔드포인트 미구현)
 3. Pull API 소비자 관점 계약 테스트
 4. 릴레이 스케일아웃 — aggId 해시 파티셔닝 (현재는 단일 인스턴스 가정을 §9.2에 명시)
-
-## 한계
-
-프런트엔드 없음(REST + OpenAPI까지), 협회/대외계 전문은 인터페이스 규격+Mock, 급여·수수료 계산은 범위 외(기준정보 제공까지). 무엇을 안 만들었는지는 설계서 §1.3(Out of Scope)과 §10.4 백로그에 기록되어 있습니다.
